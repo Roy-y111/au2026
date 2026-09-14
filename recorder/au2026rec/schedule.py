@@ -272,6 +272,7 @@ def _load_csv(
     allowed = {s.strip().lower() for s in (status_include or [])}
     sessions: list[Session] = []
     warnings: list[str] = []
+    skipped_status: dict[str, int] = {}
 
     for offset, row in enumerate(rows, start=2):
         def cell(key: str, _row: dict[str, str] = row) -> str:
@@ -281,7 +282,9 @@ def _load_csv(
 
         status = cell("status")
         if allowed and status.lower() not in allowed:
-            warnings.append(f"第 {offset} 行：狀態為 {status!r}，不在 status_include 內，已略過")
+            # 整份課表可能有幾十筆同一種狀態（例如 Favorited），
+            # 一行一個警告會把真正要看的訊息淹掉，改成最後統一回報。
+            skipped_status[status] = skipped_status.get(status, 0) + 1
             continue
 
         code = normalize_code(cell("code"))
@@ -321,6 +324,13 @@ def _load_csv(
                 source_row=offset,
                 raw=dict(row),
             )
+        )
+
+    for status, count in sorted(skipped_status.items(), key=lambda kv: -kv[1]):
+        warnings.append(
+            f"{count} 場狀態是 {status!r}，不在 status_include 內所以沒排進去。"
+            f"要一起錄的話，把 \"{status.lower()}\" 加進 config.toml 的 "
+            "[schedule] status_include"
         )
 
     sessions.sort(key=lambda s: (s.start, s.code))

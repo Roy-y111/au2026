@@ -100,8 +100,14 @@ def build_plan(
     filename_template: str,
     filename_max_length: int,
     local_tz,
+    queue_from: datetime | None = None,
 ) -> list[PlanItem]:
-    """回傳依實際錄影時間排序的計畫，含 skipped 項目（方便報告）。"""
+    """回傳依實際錄影時間排序的計畫，含 skipped 項目（方便報告）。
+
+    queue_from 有值時走「排隊模式」：忽略課表上的時間，從那個時刻起照課表順序
+    一場接一場錄。給活動結束後補錄 On-demand 用 —— 那些內容隨選隨看，
+    沒有理由照原本的時段空等。
+    """
     live_modes = list(live_modes)
     policy = overlap_policy.lower()
 
@@ -118,7 +124,9 @@ def build_plan(
 
     items = [make_item(s) for s in sorted(sessions, key=lambda s: (s.start, s.code))]
 
-    if policy == "keep":
+    if queue_from is not None:
+        placed = _queue(items, queue_from=queue_from, gap_seconds=gap_seconds)
+    elif policy == "keep":
         placed = items
     else:
         placed = _place(items, policy=policy, gap_seconds=gap_seconds)
@@ -132,9 +140,33 @@ def build_plan(
     return placed
 
 
+def _queue(
+    items: list[PlanItem], *, queue_from: datetime, gap_seconds: int
+) -> list[PlanItem]:
+    """排隊模式：從 queue_from 起，照課表順序一場接一場排。"""
+    cursor = queue_from
+    for position, item in enumerate(items, start=1):
+        length = item.end - item.start
+        item.anchored = False
+        item.start = cursor + timedelta(seconds=item.lead_seconds)
+        item.end = item.start + length
+        item.status = STATUS_OK if position == 1 else STATUS_SHIFTED
+        item.note = "排隊模式：不照課表時間，接著上一場錄"
+        cursor = item.stop_at + timedelta(seconds=gap_seconds)
+    return items
+
+
+def _append_note(existing: str, addition: str) -> str:
+    return f"{existing}；{addition}" if existing else addition
+
+
 def _blocks(item: PlanItem, gap_seconds: int) -> tuple[datetime, datetime]:
-    """這場實際佔用的時間區間，含前置與收尾緩衝。"""
-    return item.open_at, item.stop_at + timedelta(seconds=gap_seconds)
+    """這場實際佔用的時間區間，含前置與收尾緩衝。
+
+    直播場次不加場間休息 —— 它們的時間是固定的，背靠背時本來就沒有空檔可休。
+    """
+    tail = timedelta(seconds=0 if item.anchored else gap_seconds)
+    return item.open_at, item.stop_at + tail
 
 
 def _place(items: list[PlanItem], *, policy: str, gap_seconds: int) -> list[PlanItem]:
@@ -147,14 +179,47 @@ def _place(items: list[PlanItem], *, policy: str, gap_seconds: int) -> list[Plan
         return None
 
     # 第一輪：直播場次照原時間佔位。
+    #
+    # 撞期判斷只看「課程本身的時間」，不含前後緩衝 —— AU 的場次常常是整點
+    # 背靠背（上一場 07:00 結束、下一場 07:00 開始），若把緩衝算進去會被誤判成
+    # 撞期而白白丟掉一整場。真正錄不到的只有內容本身重疊的情況。
+    placed: list[PlanItem] = []
     for item in [i for i in items if i.anchored]:
-        window = _blocks(item, gap_seconds)
-        clash = collides(*window)
+        clash = next(
+            (p for p in placed if item.start < p.end and p.start < item.end), None
+        )
         if clash is None:
-            occupied.append((*window, item))
+            placed.append(item)
             continue
         item.status = STATUS_SKIPPED
         item.note = f"與直播場次 {clash.session.label()} 時間重疊，需自行取捨"
+
+    # 相鄰的直播場次之間如果塞不下完整的前後緩衝，就把緩衝縮短，
+    # 而不是放棄其中一場。空檔優先給下一場的前置（開頁載入），
+    # 因為直播的開始時間是固定的，錯過開頭補不回來。
+    placed.sort(key=lambda i: i.start)
+    for earlier, later in zip(placed, placed[1:]):
+        free = int((later.start - earlier.end).total_seconds())
+        if free >= earlier.tail_seconds + later.lead_seconds:
+            continue
+        lead = max(0, min(later.lead_seconds, free))
+        tail = max(0, min(earlier.tail_seconds, free - lead))
+        if tail != earlier.tail_seconds:
+            earlier.tail_seconds = tail
+            earlier.note = _append_note(
+                earlier.note,
+                f"與下一場直播相接，收尾緩衝縮短為 {tail} 秒",
+            )
+        if lead != later.lead_seconds:
+            later.lead_seconds = lead
+            later.note = _append_note(
+                later.note,
+                f"接在上一場直播後面，只能提前 {lead} 秒開頁"
+                + ("（開頭可能錄到載入畫面）" if lead == 0 else ""),
+            )
+
+    for item in placed:
+        occupied.append((*_blocks(item, gap_seconds), item))
 
     # 第二輪：On-demand 依課表順序往後排隊。
     for item in [i for i in items if not i.anchored]:
