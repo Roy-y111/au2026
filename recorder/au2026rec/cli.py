@@ -15,10 +15,12 @@
     au2026rec run --live           只錄直播，照課表時間（活動期間）
     au2026rec run --ondemand --queue  排隊補錄 On-demand，一場接一場（活動之後）
     au2026rec run                  全部照課表時間錄
+    au2026rec srt <影片或資料夾>   錄好的影片 → 英文逐字稿（Groq）→ 繁中字幕（agy）
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -26,7 +28,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from au2026rec import __version__, obslocal
-from au2026rec import browserlaunch, obsscene
+from au2026rec import browserlaunch, obsscene, subtitle
 from au2026rec.browser import (
     BrowserError,
     BrowserSettings,
@@ -1043,6 +1045,21 @@ def cmd_test_record(args: argparse.Namespace) -> int:
 
 # ── 參數 ────────────────────────────────────────────────────────────────
 
+def cmd_srt(args: argparse.Namespace) -> int:
+    print(f"⚠ {DISCLAIMER}")
+    print("  字幕是翻譯衍生物，一樣只供你自己學習，不公開散布。\n")
+    opts = subtitle.SrtOptions(
+        groq_key=subtitle.resolve_groq_key(args.groq_key),
+        model=args.model,
+        translator=args.translator,
+        context=args.context,
+        language=args.language,
+        translate=not args.en_only,
+        force=args.force,
+    )
+    return subtitle.run(args.paths, opts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="au2026rec",
@@ -1126,6 +1143,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_test.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     p_test.set_defaults(func=cmd_test_record)
 
+    p_srt = sub.add_parser(
+        "srt", help="錄好的影片 → 英文逐字稿（Groq）→ 繁體中文字幕（agy，模型可自選）"
+    )
+    p_srt.add_argument("paths", nargs="+", help="影片檔或整個錄影資料夾，可給多個")
+    p_srt.add_argument("--groq-key", help="Groq 金鑰（預設讀環境變數 GROQ_API_KEY）")
+    p_srt.add_argument(
+        "--model",
+        default=os.environ.get("AU2026REC_SRT_MODEL", subtitle.DEFAULT_MODEL),
+        help=f"翻譯模型（預設 {subtitle.DEFAULT_MODEL}，或環境變數 AU2026REC_SRT_MODEL；"
+        "可用 agy models 查清單）",
+    )
+    p_srt.add_argument(
+        "--translator",
+        default=os.environ.get("AU2026REC_TRANSLATOR", subtitle.DEFAULT_TRANSLATOR),
+        help="翻譯用的 agent 指令（預設 agy，需支援 -p 與 --model）",
+    )
+    p_srt.add_argument("--context", default="", help="本場專有名詞或背景，幫助翻譯（例：Revit, Forma, MCP）")
+    p_srt.add_argument("--language", default="en", help="影片語言（預設 en）")
+    p_srt.add_argument("--en-only", action="store_true", help="只做英文逐字稿，不翻譯")
+    p_srt.add_argument("--force", action="store_true", help="字幕已存在也重做")
+    p_srt.set_defaults(func=cmd_srt)
+
     p_run = sub.add_parser("run", help="照課表無人值守執行")
     p_run.add_argument("--only", action="append", help="只錄這些 session code，可重複指定")
     p_run.add_argument("--include-past", action="store_true", help="不要略過已結束的場次")
@@ -1155,6 +1194,7 @@ MENU = [
     ("u", "查／補某一堂課的網址（臨時補用）", ["url"]),
     ("c", "重新建立課程網址對照表", ["catalog"]),
     ("i", "只產生設定檔 config.toml", ["init"]),
+    ("s", "錄好的影片做繁中字幕（.zh-TW.srt）", ["srt"]),
 ]
 
 
@@ -1200,6 +1240,14 @@ def interactive_menu() -> int:
             if not code:
                 continue
             argv.append(code)
+        elif argv[0] == "srt":
+            try:
+                target = input("影片檔或錄影資料夾（可直接把資料夾拖進來）：").strip().strip('"')
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if not target:
+                continue
+            argv.append(target)
 
         print()
         try:
@@ -1207,7 +1255,8 @@ def interactive_menu() -> int:
             code = int(args.func(args))
         except SystemExit as exc:  # argparse 的錯誤不該讓選單整個結束
             code = int(exc.code or 0)
-        except (ConfigError, ScheduleError, CatalogError, obslocal.ObsLocalError, ObsError) as exc:
+        except (ConfigError, ScheduleError, CatalogError, obslocal.ObsLocalError, ObsError,
+                subtitle.SubtitleError) as exc:
             print(f"✗ {exc}")
             code = 1
         except KeyboardInterrupt:
@@ -1225,7 +1274,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ConfigError, ScheduleError, CatalogError, obslocal.ObsLocalError, ObsError) as exc:
+    except (ConfigError, ScheduleError, CatalogError, obslocal.ObsLocalError, ObsError,
+            subtitle.SubtitleError) as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
