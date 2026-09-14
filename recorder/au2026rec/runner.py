@@ -130,14 +130,15 @@ class Runner:
         try:
             for position, item in enumerate(todo, start=1):
                 log.info("── [%d/%d] %s ──", position, len(todo), item.session.label())
-                self._run_one(item)
+                nxt = todo[position] if position < len(todo) else None
+                self._run_one(item, nxt.open_at if nxt else None)
         except Interrupted:
             log.warning("已中斷排程，尚未執行的場次不會錄")
         finally:
             self._flush_report()
         return self._rows
 
-    def _run_one(self, item: PlanItem) -> None:
+    def _run_one(self, item: PlanItem, next_open_at: datetime | None = None) -> None:
         session = item.session
         row: dict[str, object] = {}
 
@@ -226,12 +227,12 @@ class Runner:
             self._stop.raised = True
             raise Interrupted
         if self.options.gap_seconds:
-            sleep_until(
-                now_utc() + timedelta(seconds=self.options.gap_seconds),
-                self._stop,
-                label="場間休息",
-                countdown_every=0,
-            )
+            # 場間休息是給 OBS 喘口氣用的，但不能吃掉下一場的開頁時間 ——
+            # 直播背靠背時，晚一秒開頁就少錄一秒。
+            rest_until = now_utc() + timedelta(seconds=self.options.gap_seconds)
+            if next_open_at is not None:
+                rest_until = min(rest_until, next_open_at)
+            sleep_until(rest_until, self._stop, label="場間休息", countdown_every=0)
 
     # ── 報告 ────────────────────────────────────────────────────────────
     def _fmt(self, moment: datetime) -> str:

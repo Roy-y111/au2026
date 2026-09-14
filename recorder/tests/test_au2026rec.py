@@ -244,6 +244,44 @@ class TestPlanning(unittest.TestCase):
         for earlier, later in zip(items, items[1:]):
             self.assertGreaterEqual(later.open_at, earlier.stop_at)
 
+    def test_back_to_back_live_sessions_both_kept(self) -> None:
+        """AU 的場次常常整點背靠背，不可以因為前後緩衝咬到就丟掉一整場。"""
+        items = plan([
+            make_session("L1", "2026-09-15T09:00", 60, "Live"),
+            make_session("L2", "2026-09-15T10:00", 60, "Live"),  # 前一場一結束就開始
+        ])
+        self.assertEqual([i.status for i in items], [STATUS_OK, STATUS_OK])
+        first, second = items
+        self.assertEqual(first.start, first.session.start)
+        self.assertEqual(second.start, second.session.start)
+        # 緩衝被縮短，佔用區間才不會互相重疊
+        self.assertLessEqual(first.stop_at, second.open_at)
+        self.assertIn("相接", first.note)
+
+    def test_tight_gap_between_live_splits_buffer(self) -> None:
+        """中間只有 60 秒空檔時，優先留給下一場開頁。"""
+        items = plan(
+            [
+                make_session("L1", "2026-09-15T09:00", 60, "Live"),
+                make_session("L2", "2026-09-15T10:01", 60, "Live"),
+            ],
+            lead_seconds=90,
+            tail_seconds=120,
+        )
+        first, second = items
+        self.assertEqual(second.lead_seconds, 60)   # 空檔全給前置
+        self.assertEqual(first.tail_seconds, 0)
+        self.assertLessEqual(first.stop_at, second.open_at)
+
+    def test_truly_overlapping_live_still_skipped(self) -> None:
+        """真的內容重疊才該跳過。"""
+        items = plan([
+            make_session("L1", "2026-09-15T09:00", 60, "Live"),
+            make_session("L2", "2026-09-15T09:30", 60, "Live"),
+        ])
+        by_code = {i.session.code: i for i in items}
+        self.assertEqual(by_code["L2"].status, STATUS_SKIPPED)
+
     def test_live_clash_marks_later_skipped(self) -> None:
         items = plan([
             make_session("L1", "2026-09-15T09:00", 60, "Live"),
