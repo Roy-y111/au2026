@@ -300,12 +300,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if missing else 0
 
 
+_TZ_LABELS = {
+    "Asia/Taipei": "台灣時間",
+    "America/Los_Angeles": "太平洋",
+    "Asia/Shanghai": "中國時間",
+    "Asia/Tokyo": "日本時間",
+    "UTC": "UTC",
+}
+
+
+def _tz_label(zone) -> str:
+    """時間欄的標題。認得的時區給中文，其他就直接用時區名的最後一段。"""
+    key = str(zone)
+    return _TZ_LABELS.get(key, key.rsplit("/", 1)[-1].replace("_", " "))
+
+
 def _plan_table(cfg: Config, items: Sequence[PlanItem]) -> str:
     local_tz = get_zone(str(cfg.get("schedule", "local_timezone")))
     source_tz = get_zone(str(cfg.get("schedule", "source_timezone")))
     marks = {STATUS_OK: " ", STATUS_SHIFTED: "→", STATUS_SKIPPED: "×"}
     lines = [
-        f"{'#':>3} {'':1} {'台灣時間':<17} {'太平洋':<12} {'長度':>6} {'類型':<10} 課程",
+        f"{'#':>3} {'':1} {_tz_label(local_tz):<17} {_tz_label(source_tz):<12} "
+        f"{'長度':>6} {'類型':<10} 課程",
         "─" * 96,
     ]
     for item in items:
