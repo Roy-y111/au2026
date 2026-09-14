@@ -100,8 +100,14 @@ def build_plan(
     filename_template: str,
     filename_max_length: int,
     local_tz,
+    queue_from: datetime | None = None,
 ) -> list[PlanItem]:
-    """回傳依實際錄影時間排序的計畫，含 skipped 項目（方便報告）。"""
+    """回傳依實際錄影時間排序的計畫，含 skipped 項目（方便報告）。
+
+    queue_from 有值時走「排隊模式」：忽略課表上的時間，從那個時刻起照課表順序
+    一場接一場錄。給活動結束後補錄 On-demand 用 —— 那些內容隨選隨看，
+    沒有理由照原本的時段空等。
+    """
     live_modes = list(live_modes)
     policy = overlap_policy.lower()
 
@@ -118,7 +124,9 @@ def build_plan(
 
     items = [make_item(s) for s in sorted(sessions, key=lambda s: (s.start, s.code))]
 
-    if policy == "keep":
+    if queue_from is not None:
+        placed = _queue(items, queue_from=queue_from, gap_seconds=gap_seconds)
+    elif policy == "keep":
         placed = items
     else:
         placed = _place(items, policy=policy, gap_seconds=gap_seconds)
@@ -130,6 +138,22 @@ def build_plan(
             item, template=filename_template, local_tz=local_tz, max_length=filename_max_length
         )
     return placed
+
+
+def _queue(
+    items: list[PlanItem], *, queue_from: datetime, gap_seconds: int
+) -> list[PlanItem]:
+    """排隊模式：從 queue_from 起，照課表順序一場接一場排。"""
+    cursor = queue_from
+    for position, item in enumerate(items, start=1):
+        length = item.end - item.start
+        item.anchored = False
+        item.start = cursor + timedelta(seconds=item.lead_seconds)
+        item.end = item.start + length
+        item.status = STATUS_OK if position == 1 else STATUS_SHIFTED
+        item.note = "排隊模式：不照課表時間，接著上一場錄"
+        cursor = item.stop_at + timedelta(seconds=gap_seconds)
+    return items
 
 
 def _append_note(existing: str, addition: str) -> str:

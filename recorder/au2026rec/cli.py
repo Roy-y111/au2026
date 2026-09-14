@@ -12,7 +12,9 @@
     au2026rec obs-doctor           檢查本機 OBS 設定，可自動填入密碼
     au2026rec obs-test             測 OBS 連線與場景
     au2026rec test-record <code>   單場試錄，驗證整條流程
-    au2026rec run                  照課表無人值守執行
+    au2026rec run --live           只錄直播，照課表時間（活動期間）
+    au2026rec run --ondemand --queue  排隊補錄 On-demand，一場接一場（活動之後）
+    au2026rec run                  全部照課表時間錄
 """
 from __future__ import annotations
 
@@ -126,9 +128,34 @@ def _load_sessions(cfg: Config) -> tuple[list[Any], list[str]]:
     return sessions, warnings
 
 
-def _build_plan(cfg: Config, sessions: Sequence[Any]) -> list[PlanItem]:
+def _filter_sessions(
+    cfg: Config, sessions: Sequence[Any], args: argparse.Namespace
+) -> tuple[list[Any], str]:
+    """依 --live / --ondemand 篩選，回傳 (場次, 說明文字)。"""
+    live_modes = list(cfg.get("schedule", "live_modes"))
+    want_live = getattr(args, "live", False)
+    want_ondemand = getattr(args, "ondemand", False)
+    if want_live == want_ondemand:  # 都沒指定或都指定 = 不篩選
+        return list(sessions), ""
+    if want_live:
+        return [s for s in sessions if s.is_live(live_modes)], "只排直播場次"
+    return [s for s in sessions if not s.is_live(live_modes)], "只排非直播（On-demand）場次"
+
+
+def _queue_start(args: argparse.Namespace) -> datetime | None:
+    """--queue 指定的排隊起點。給的是幾分鐘後，預設立刻開始。"""
+    minutes = getattr(args, "queue", None)
+    if minutes is None:
+        return None
+    return now_utc() + timedelta(minutes=max(minutes, 0))
+
+
+def _build_plan(
+    cfg: Config, sessions: Sequence[Any], queue_from: datetime | None = None
+) -> list[PlanItem]:
     return build_plan(
         sessions,
+        queue_from=queue_from,
         live_modes=cfg.get("schedule", "live_modes"),
         overlap_policy=str(cfg.get("schedule", "overlap_policy")),
         lead_seconds=int(cfg.get("recording", "lead_seconds")),
@@ -305,10 +332,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if warnings:
         print("提醒：")
         _print_warnings(warnings)
+    sessions, filter_note = _filter_sessions(cfg, sessions, args)
+    if filter_note:
+        print(f"（{filter_note}，共 {len(sessions)} 場）")
     if not sessions:
         print("課表沒有可用的場次")
         return 1
-    items = _build_plan(cfg, sessions)
+    queue_from = _queue_start(args)
+    if queue_from is not None:
+        local = queue_from.astimezone(get_zone(str(cfg.get("schedule", "local_timezone"))))
+        print(f"（排隊模式：從 {local:%m/%d %H:%M} 起一場接一場錄，不照課表時間）")
+    items = _build_plan(cfg, sessions, queue_from)
     print(_plan_table(cfg, items))
     counts = summarize(items)
     total = sum(item.duration().total_seconds() for item in items if item.status != STATUS_SKIPPED)
@@ -927,7 +961,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not sessions:
         print("課表沒有可用的場次")
         return 1
-    items = _build_plan(cfg, sessions)
+    sessions, filter_note = _filter_sessions(cfg, sessions, args)
+    if filter_note:
+        print(f"（{filter_note}，共 {len(sessions)} 場）")
+    if not sessions:
+        print("篩選後沒有場次可錄")
+        return 1
+    queue_from = _queue_start(args)
+    if queue_from is not None:
+        local = queue_from.astimezone(get_zone(str(cfg.get("schedule", "local_timezone"))))
+        print(f"（排隊模式：從 {local:%m/%d %H:%M} 起一場接一場錄，不照課表時間）")
+    items = _build_plan(cfg, sessions, queue_from)
     if args.only:
         wanted = {code.upper() for code in args.only}
         items = [item for item in items if item.session.code.upper() in wanted]
@@ -1012,6 +1056,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.set_defaults(func=cmd_validate)
 
     p_plan = sub.add_parser("plan", help="印出實際錄影時間軸")
+    p_plan.add_argument("--live", action="store_true", help="只排直播場次")
+    p_plan.add_argument("--ondemand", action="store_true", help="只排非直播（On-demand）場次")
+    p_plan.add_argument(
+        "--queue", type=int, nargs="?", const=0, metavar="分鐘",
+        help="排隊模式：忽略課表時間，從現在（或 N 分鐘後）起一場接一場錄",
+    )
     p_plan.set_defaults(func=cmd_plan)
 
     p_probe = sub.add_parser("probe", help="列出頁面可點元素，用來補 play_selectors")
@@ -1064,6 +1114,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--only", action="append", help="只錄這些 session code，可重複指定")
     p_run.add_argument("--include-past", action="store_true", help="不要略過已結束的場次")
     p_run.add_argument("-y", "--yes", action="store_true", help="不要問確認，直接開始待機")
+    p_run.add_argument("--live", action="store_true", help="只排直播場次")
+    p_run.add_argument("--ondemand", action="store_true", help="只排非直播（On-demand）場次")
+    p_run.add_argument(
+        "--queue", type=int, nargs="?", const=0, metavar="分鐘",
+        help="排隊模式：忽略課表時間，從現在（或 N 分鐘後）起一場接一場錄",
+    )
     p_run.set_defaults(func=cmd_run)
 
     return parser
@@ -1074,12 +1130,14 @@ MENU = [
     ("2", "檢查 OBS 設定（密碼、錄影資料夾、場景）", ["obs-doctor"]),
     ("3", "列出螢幕、建立錄課場景", ["display"]),
     ("4", "試錄 8 秒，確認畫面與聲音都正常", ["obs-test", "--record-seconds", "8"]),
-    ("5", "檢查課表、看錄影時間軸", ["plan"]),
+    ("5", "看錄影時間軸（全部）", ["plan"]),
     ("6", "開瀏覽器登入 AU2026（登入一次就好）", ["browser", "--set-mode"]),
-    ("7", "▶ 開始排程錄影", ["run"]),
-    ("8", "找播放鍵選擇器（需要輸入課程代碼）", ["probe"]),
-    ("9", "重新建立課程網址對照表", ["catalog"]),
+    ("7", "▶ 活動期間：只錄直播，照課表時間", ["run", "--live"]),
+    ("8", "▶ 活動之後：排隊補錄 On-demand，一場接一場", ["run", "--ondemand", "--queue"]),
+    ("9", "▶ 全部照課表時間錄（直播與 On-demand 混排）", ["run"]),
+    ("p", "找播放鍵選擇器（需要輸入課程代碼）", ["probe"]),
     ("u", "查／補某一堂課的網址（臨時補用）", ["url"]),
+    ("c", "重新建立課程網址對照表", ["catalog"]),
     ("i", "只產生設定檔 config.toml", ["init"]),
 ]
 
@@ -1093,7 +1151,7 @@ def interactive_menu() -> int:
     print("  但 OBS 錄的是整個螢幕，所以就算導頁或播放出錯，畫面照樣照時間錄。")
     print("  出狀況時你可以自己改：")
     print("    · 網址錯或查不到 → 選 u（或 au2026rec url 課程代碼 網址）")
-    print("    · 影片沒自動播   → 選 8 找選擇器，貼進 config.toml 的 play_selectors")
+    print("    · 影片沒自動播   → 選 p 找選擇器，貼進 config.toml 的 play_selectors")
     print("    · 完全沒切頁     → 自己把那頁開起來就好，錄影已經在跑")
     print("  細節看 使用說明.md 開頭那一節。\n")
     print(f"工作目錄：{Path.cwd()}")

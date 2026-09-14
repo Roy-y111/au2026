@@ -327,6 +327,50 @@ class TestPlanning(unittest.TestCase):
         self.assertTrue(session.is_live(["live"]))
 
 
+class TestQueueMode(unittest.TestCase):
+    """排隊模式：活動後補錄 On-demand 用，不照課表時間。"""
+
+    def setUp(self) -> None:
+        self.start = datetime(2026, 9, 20, 9, 0, tzinfo=ZoneInfo(PDT))
+
+    def test_sessions_chain_back_to_back(self) -> None:
+        items = plan(
+            [
+                make_session("A", "2026-09-15T09:00", 60, "On-demand"),
+                make_session("B", "2026-09-16T14:00", 30, "On-demand"),
+                make_session("C", "2026-09-17T08:00", 45, "On-demand"),
+            ],
+            queue_from=self.start,
+            lead_seconds=60,
+            tail_seconds=0,
+            gap_seconds=30,
+        )
+        self.assertEqual([i.session.code for i in items], ["A", "B", "C"])
+        for earlier, later in zip(items, items[1:]):
+            self.assertGreaterEqual(later.open_at, earlier.stop_at)
+        # 第一場從指定的起點開始（加上前置）
+        self.assertEqual(items[0].open_at, self.start)
+
+    def test_durations_are_preserved(self) -> None:
+        items = plan(
+            [make_session("A", "2026-09-15T09:00", 90, "On-demand")],
+            queue_from=self.start,
+        )
+        self.assertEqual(items[0].end - items[0].start, timedelta(minutes=90))
+
+    def test_live_sessions_lose_their_anchor_in_queue_mode(self) -> None:
+        """排隊模式是事後補錄，直播早就播完了，沒有理由再鎖時間。"""
+        items = plan(
+            [
+                make_session("L", "2026-09-15T09:00", 60, "Live"),
+                make_session("O", "2026-09-15T09:30", 60, "On-demand"),
+            ],
+            queue_from=self.start,
+        )
+        self.assertTrue(all(not i.anchored for i in items))
+        self.assertGreaterEqual(items[1].open_at, items[0].stop_at)
+
+
 class TestFilenames(unittest.TestCase):
     def test_strips_illegal_characters(self) -> None:
         self.assertEqual(sanitize_filename('a/b\\c:d*e?"f<g>h|i', 120), "abcdefghi")
