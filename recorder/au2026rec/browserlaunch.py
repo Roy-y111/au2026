@@ -111,6 +111,11 @@ def launch(
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        # Chrome 規定「有聲音的媒體」要有真實使用者手勢才會載入串流。
+        # 程式送的是合成點擊，播放器 UI 會切成播放中、但串流永遠載不進來
+        # （readyState 停在 0）—— 結果就是錄到 90 分鐘的轉圈圈畫面。
+        # 2026-09-15 在真實 AU 課程頁實測確認過這個行為。
+        "--autoplay-policy=no-user-gesture-required",
     ]
     if url:
         command.append(url)

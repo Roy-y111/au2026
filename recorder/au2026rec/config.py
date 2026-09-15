@@ -41,6 +41,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "attach_profile_dir": "attach-profile",
         "settle_seconds": 8,
         "play_selectors": [
+            # 2026-09-15 真實課程頁實測：AU 用 video.js（Brightcove）
+            ".vjs-big-play-button",
+            "button:has-text('Play Video')",
+            "[aria-label='Video Player']",
             "button:has-text('Watch now')",
             "button:has-text('Join session')",
             "button:has-text('Play')",

@@ -73,12 +73,17 @@ settle_seconds = 8
 # 全部沒命中也不影響錄影，只是不會自動播；用 `au2026rec probe <code>` 可以
 # 印出實際頁面上的候選按鈕來補這份清單。
 play_selectors = [
+  # 2026-09-15 在真實 AU 課程頁 probe 出來的：平台用 video.js（Brightcove），
+  # 播放鍵是 <button class="vjs-big-play-button">Play Video</button>
+  ".vjs-big-play-button",
+  "button:has-text('Play Video')",
+  "[aria-label='Video Player']",
+  # 以下是備援，萬一平台改版
   "button:has-text('Watch now')",
   "button:has-text('Join session')",
   "button:has-text('Play')",
   "a:has-text('Watch now')",
   "[aria-label*='Play' i]",
-  ".vjs-big-play-button",
   "video",
 ]
 # 嘗試關掉的彈窗（cookie 同意、歡迎視窗等）
