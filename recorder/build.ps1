@@ -80,8 +80,28 @@ if (Test-Path $exe) {
         $version = (Select-String -Path 'au2026rec\__init__.py' -Pattern '__version__ = "(.+)"').Matches.Groups[1].Value
         $zipPath = "dist\au2026rec-$version-win64.zip"
         Remove-Item $zipPath -ErrorAction SilentlyContinue
-        Compress-Archive -Path $outDir -DestinationPath $zipPath
+        # PyInstaller 剛寫完上千個檔案，偶爾會有檔案還被鎖著導致壓縮失敗。
+        # 失敗要講清楚，不能印出「0 MB」假裝成功。
+        $ok = $false
+        foreach ($try in 1..3) {
+            try {
+                Compress-Archive -Path $outDir -DestinationPath $zipPath -ErrorAction Stop
+                $ok = $true; break
+            } catch {
+                Write-Host "  壓縮第 $try 次失敗：$($_.Exception.Message)" -ForegroundColor Yellow
+                Remove-Item $zipPath -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+            }
+        }
+        if (-not $ok -or -not (Test-Path $zipPath)) {
+            Write-Host "`n發佈包壓縮失敗，dist\au2026rec 本身是好的，可自行壓縮。" -ForegroundColor Red
+            exit 1
+        }
         $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+        if ($zipSize -lt 10) {
+            Write-Host "`n發佈包只有 $zipSize MB，明顯不對（正常約 51 MB）。" -ForegroundColor Red
+            exit 1
+        }
         Write-Host "`n發佈包：$zipPath（$zipSize MB）" -ForegroundColor Green
         Write-Host "  收到的人解壓縮後點兩下 au2026rec.exe，選 1 走引導設定即可，不需要安裝 Python。"
     }
