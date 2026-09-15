@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "au2026rec"
-version = "0.1.1"
+version = "0.1.2"
 description = "把 AU2026 已選課 CSV 課表變成無人值守的自動開課 + OBS 錄影排程器"
 requires-python = ">=3.11"
 license = "MIT"

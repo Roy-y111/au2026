@@ -19,7 +19,7 @@
 
 ## 📦 下載（不用自己編譯）
 
-**[⬇ au2026rec-0.1.1-win64.zip](https://github.com/shuotao/au2026/releases/latest)** — 免安裝，解壓縮後點兩下 `au2026rec.exe`，選 **1** 走引導設定。不需要 Python。
+**[⬇ au2026rec-0.1.2-win64.zip](https://github.com/shuotao/au2026/releases/latest)** — 免安裝，解壓縮後點兩下 `au2026rec.exe`，選 **1** 走引導設定。不需要 Python。
 
 需要 Windows 10/11、Chrome（或 Edge / Brave）、OBS Studio 28 以上。
 
