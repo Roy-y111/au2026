@@ -64,6 +64,11 @@ fallback_to_open = true
 login_url = "https://conferences.autodesk.com/flow/autodesk/au2026/sessioncatalog/page/digital"
 # 登入用瀏覽器的 profile 目錄，登入狀態存在這裡
 attach_profile_dir = "attach-profile"
+# 自動播放旗標。兩面刃，2026-09-16 用真實課程頁實測：
+#   false（預設）= 直播進頁面就正常播；但 On-demand 點了播放鍵不會動
+#   true         = On-demand 點了會播；但直播會壞掉（畫面一直轉圈圈）
+# 錄直播時保持 false，之後補錄 On-demand 再開成 true（或用 browser --autoplay）。
+allow_autoplay = false
 
 # 程式不碰視窗的大小與位置：你把瀏覽器擺成什麼樣，OBS 錄到的就是什麼樣。
 
@@ -74,17 +79,16 @@ settle_seconds = 8
 # 印出實際頁面上的候選按鈕來補這份清單。
 play_selectors = [
   # 2026-09-15 在真實 AU 課程頁 probe 出來的：平台用 video.js（Brightcove），
-  # 播放鍵是 <button class="vjs-big-play-button">Play Video</button>
+  # 播放鍵是 <button class="vjs-big-play-button">Play Video</button>。
+  # 只列「明確是按鈕」的選擇器 —— 不要放 "video" 或播放器容器，
+  # 那些點下去會 toggle 暫停，直播進頁面就自動播，點它等於把直播按停。
   ".vjs-big-play-button",
   "button:has-text('Play Video')",
-  "[aria-label='Video Player']",
-  # 以下是備援，萬一平台改版
+  # 備援，萬一平台改版
   "button:has-text('Watch now')",
   "button:has-text('Join session')",
   "button:has-text('Play')",
   "a:has-text('Watch now')",
-  "[aria-label*='Play' i]",
-  "video",
 ]
 # 嘗試關掉的彈窗（cookie 同意、歡迎視窗等）
 dismiss_selectors = [
@@ -93,6 +97,11 @@ dismiss_selectors = [
   "button:has-text('Got it')",
   "button[aria-label='Close']",
 ]
+# 開始播放後把播放器捲到畫面正中央 —— 課程頁的播放器預設偏上，
+# 整個螢幕錄下來會上下留一堆空白
+# 播放器預設是靜音的，進去要幫忙打開，不然整場錄下來沒聲音
+unmute = true
+center_player = true
 # 每場錄完是否把分頁導回空白頁（停掉影片與聲音）
 close_page_after = true
 

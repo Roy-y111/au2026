@@ -39,19 +39,18 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "fallback_to_open": True,
         "login_url": "https://conferences.autodesk.com/flow/autodesk/au2026/sessioncatalog/page/digital",
         "attach_profile_dir": "attach-profile",
+        "allow_autoplay": False,
         "settle_seconds": 8,
         "play_selectors": [
-            # 2026-09-15 真實課程頁實測：AU 用 video.js（Brightcove）
+            # 2026-09-15 真實課程頁實測：AU 用 video.js（Brightcove）。
+            # 只列「明確是按鈕」的選擇器 —— 不要放 video 或播放器容器，
+            # 點那些會 toggle 暫停，直播進頁面就自動播，點它等於把直播按停。
             ".vjs-big-play-button",
             "button:has-text('Play Video')",
-            "[aria-label='Video Player']",
             "button:has-text('Watch now')",
             "button:has-text('Join session')",
             "button:has-text('Play')",
             "a:has-text('Watch now')",
-            "[aria-label*='Play' i]",
-            ".vjs-big-play-button",
-            "video",
         ],
         "dismiss_selectors": [
             "button:has-text('Accept all')",
@@ -59,6 +58,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "button:has-text('Got it')",
             "button[aria-label='Close']",
         ],
+        "center_player": True,
+        "unmute": True,
         "close_page_after": True,
     },
     "paths": {
