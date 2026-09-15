@@ -80,12 +80,32 @@ if (Test-Path $exe) {
         $version = (Select-String -Path 'au2026rec\__init__.py' -Pattern '__version__ = "(.+)"').Matches.Groups[1].Value
         $zipPath = "dist\au2026rec-$version-win64.zip"
         Remove-Item $zipPath -ErrorAction SilentlyContinue
+
+        # 發佈包只放這幾樣東西。用白名單而不是黑名單：沒想到的東西一律排除，
+        # 才不會哪天多出個新檔案就默默被壓進去。
+        # dist\au2026rec 裡通常還有使用者自己的 config.toml（內含 OBS 密碼）、
+        # 課表、瀏覽器 profile 與 logs —— 那些絕對不能外流。
+        $allow = @('au2026rec.exe', '_internal', 'catalog.json', '使用說明.md')
+
+        $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("au2026rec-pack-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $pkg = Join-Path $staging 'au2026rec'
+        New-Item -ItemType Directory -Path $pkg -Force | Out-Null
+        foreach ($name in $allow) {
+            $src = Join-Path $outDir $name
+            if (Test-Path $src) { Copy-Item $src $pkg -Recurse -Force }
+        }
+        $excluded = Get-ChildItem $outDir | Where-Object { $allow -notcontains $_.Name }
+        if ($excluded) {
+            Write-Host "`n以下是你自己的檔案，不會放進發佈包：" -ForegroundColor DarkGray
+            $excluded | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor DarkGray }
+        }
+
         # PyInstaller 剛寫完上千個檔案，偶爾會有檔案還被鎖著導致壓縮失敗。
         # 失敗要講清楚，不能印出「0 MB」假裝成功。
         $ok = $false
         foreach ($try in 1..3) {
             try {
-                Compress-Archive -Path $outDir -DestinationPath $zipPath -ErrorAction Stop
+                Compress-Archive -Path $pkg -DestinationPath $zipPath -ErrorAction Stop
                 $ok = $true; break
             } catch {
                 Write-Host "  壓縮第 $try 次失敗：$($_.Exception.Message)" -ForegroundColor Yellow
@@ -93,6 +113,7 @@ if (Test-Path $exe) {
                 Start-Sleep -Seconds 3
             }
         }
+        Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
         if (-not $ok -or -not (Test-Path $zipPath)) {
             Write-Host "`n發佈包壓縮失敗，dist\au2026rec 本身是好的，可自行壓縮。" -ForegroundColor Red
             exit 1
@@ -102,6 +123,31 @@ if (Test-Path $exe) {
             Write-Host "`n發佈包只有 $zipSize MB，明顯不對（正常約 51 MB）。" -ForegroundColor Red
             exit 1
         }
+
+        # 最後打開壓縮檔逐一比對。前面的暫存區做法理論上就不會混進東西，
+        # 但這東西會發給別人、裡面可能夾著 OBS 密碼，值得再確認一次。
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath))
+        # 注意：Windows PowerShell 5.1 的 Compress-Archive 用反斜線當分隔符號，
+        # 只切 '/' 的話一個項目都抓不到，驗證會變成永遠通過的擺設。兩種都正規化。
+        $top = $archive.Entries |
+            ForEach-Object { (($_.FullName -replace '\\', '/') -split '/')[1] } |
+            Where-Object { $_ } |
+            Select-Object -Unique
+        $archive.Dispose()
+        if (-not $top) {
+            Remove-Item $zipPath -Force
+            Write-Host "`n發佈包內容讀不出來，已刪除（驗證不過就不出貨）。" -ForegroundColor Red
+            exit 1
+        }
+        $bad = $top | Where-Object { $allow -notcontains $_ }
+        if ($bad) {
+            Remove-Item $zipPath -Force
+            Write-Host "`n發佈包裡有不該出現的東西，已刪除：" -ForegroundColor Red
+            $bad | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+            exit 1
+        }
+        Write-Host "  ✓ 已確認發佈包只含程式本體、對照表與使用說明" -ForegroundColor DarkGray
         Write-Host "`n發佈包：$zipPath（$zipSize MB）" -ForegroundColor Green
         Write-Host "  收到的人解壓縮後點兩下 au2026rec.exe，選 1 走引導設定即可，不需要安裝 Python。"
     }
