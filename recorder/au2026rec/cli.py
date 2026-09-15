@@ -177,6 +177,8 @@ def _browser_settings(cfg: Config) -> BrowserSettings:
         settle_seconds=int(cfg.get("browser", "settle_seconds")),
         play_selectors=list(cfg.get("browser", "play_selectors")),
         dismiss_selectors=list(cfg.get("browser", "dismiss_selectors")),
+        center_player=bool(cfg.get("browser", "center_player")),
+        unmute=bool(cfg.get("browser", "unmute")),
         close_page_after=bool(cfg.get("browser", "close_page_after")),
     )
 
@@ -635,6 +637,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             args.port = browserlaunch.DEFAULT_PORT
             args.browser = None
             args.set_mode = True
+            args.autoplay = False
             cmd_browser(args)
 
         print("\n" + "=" * 62)
@@ -695,9 +698,13 @@ def cmd_browser(args: argparse.Namespace) -> int:
         print("注意：如果這個瀏覽器現在是開著的，新視窗會併進舊程序、不會開除錯埠 ——")
         print("      請先把它完全關掉（含背景常駐）。")
         try:
+            allow_autoplay = args.autoplay or bool(cfg.get("browser", "allow_autoplay"))
+            if allow_autoplay:
+                print("  （已開啟自動播放旗標：On-demand 會自動播，但直播會壞掉）")
             browserlaunch.launch(
                 chosen, profile_dir=profile, port=port,
                 url=str(cfg.get("browser", "login_url")),
+                allow_autoplay=allow_autoplay,
             )
         except browserlaunch.LaunchError as exc:
             print(f"✗ {exc}")
@@ -1113,6 +1120,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_browser.add_argument("--port", type=int, default=browserlaunch.DEFAULT_PORT)
     p_browser.add_argument(
         "--set-mode", action="store_true", help="順便把設定改成 attach 模式"
+    )
+    p_browser.add_argument(
+        "--autoplay", action="store_true",
+        help="開啟自動播放旗標：補錄 On-demand 時要加；錄直播時千萬不要加（直播會轉圈圈）",
     )
     p_browser.set_defaults(func=cmd_browser)
 

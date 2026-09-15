@@ -21,7 +21,7 @@ REPORT_FIELDS = [
     "index", "code", "title", "mode",
     "planned_start_local", "planned_end_local",
     "recorded_start", "recorded_stop",
-    "result", "output_path", "played", "fullscreen", "note", "url",
+    "result", "output_path", "played", "playing", "note", "url",
 ]
 
 
@@ -125,6 +125,14 @@ class Runner:
             log.warning("沒有待錄的場次（都結束了或都被跳過）")
             return self._rows
 
+        now = now_utc()
+        ongoing = [i for i in todo if i.open_at <= now < i.stop_at]
+        if ongoing:
+            cur = ongoing[0]
+            log.warning(
+                "現在正在進行中：%s（%s–%s）—— 會立刻跳轉並接手錄影",
+                cur.session.label(), self._fmt(cur.start), self._fmt(cur.end),
+            )
         log.info("待錄 %d 場，第一場 %s 開始", len(todo), self._fmt(todo[0].start))
         self._stop.install()
         try:
@@ -171,6 +179,9 @@ class Runner:
                 opened = {"played": False, "note": f"導頁錯誤：{exc}"}
 
         row["played"] = opened.get("played")
+        row["playing"] = opened.get("playing")
+        if opened.get("note"):
+            item.note = (item.note + "；" if item.note else "") + str(opened["note"])
         if not opened.get("played"):
             log.warning(
                 "沒有自動播放，仍會照時間錄影（畫面可能停在課程頁）。"
@@ -186,7 +197,10 @@ class Runner:
         try:
             if self.options.scene or session.scene:
                 self.obs.switch_scene(session.scene or self.options.scene)
-            self.obs.start_recording(item.output_name)
+            how = self.obs.start_recording(item.output_name)
+            if how == "continued":
+                result = "recorded-continued"
+                note = (note + "；" if note else "") + "接續 OBS 既有的錄影（中途重啟）"
             started_at = now_utc()
         except ObsError as exc:
             log.error("OBS 開始錄影失敗：%s", exc)
@@ -262,7 +276,7 @@ class Runner:
             "result": result,
             "output_path": output_path or "",
             "played": "",
-            "fullscreen": "",
+            "playing": "",
             "note": note,
             "url": item.session.url or "",
         }

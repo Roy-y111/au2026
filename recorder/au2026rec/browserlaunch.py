@@ -97,6 +97,7 @@ def launch(
     port: int = DEFAULT_PORT,
     url: str = "",
     wait_seconds: int = 30,
+    allow_autoplay: bool = False,
 ) -> None:
     """啟動瀏覽器並等除錯埠打開。除了除錯埠與 profile 目錄外不加任何參數。"""
     if port_is_open(port):
@@ -111,12 +112,17 @@ def launch(
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
-        # Chrome 規定「有聲音的媒體」要有真實使用者手勢才會載入串流。
-        # 程式送的是合成點擊，播放器 UI 會切成播放中、但串流永遠載不進來
-        # （readyState 停在 0）—— 結果就是錄到 90 分鐘的轉圈圈畫面。
-        # 2026-09-15 在真實 AU 課程頁實測確認過這個行為。
-        "--autoplay-policy=no-user-gesture-required",
     ]
+    if allow_autoplay:
+        # 這個旗標兩面刃，2026-09-16 用真實課程頁實測出來的：
+        #
+        #   帶著  → On-demand 點了播放鍵會真的開始載入；直播卻壞掉
+        #           （readyState 停在 0、buffered 空的，畫面一直轉圈圈）
+        #   不帶  → 直播進頁面就正常自動播；On-demand 點了不動
+        #
+        # 同一個已登入的 profile，只差這個旗標，行為就完全相反。
+        # 所以預設不帶（直播錯過就沒了），補錄 On-demand 時才打開。
+        command.append("--autoplay-policy=no-user-gesture-required")
     if url:
         command.append(url)
     try:

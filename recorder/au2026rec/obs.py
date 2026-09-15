@@ -144,14 +144,24 @@ class ObsController:
                 exc,
             )
 
-    def start_recording(self, filename: str | None = None) -> None:
+    def start_recording(self, filename: str | None = None) -> str:
+        """開始錄影。OBS 已經在錄的話沿用既有的，回傳 started / continued。
+
+        中途重啟程式時（例如改了設定要重新套用），OBS 往往還在錄上一場。
+        這時候硬要重開會中斷錄影、也可能蓋掉檔案，沿用既有的才是對的。
+        """
         client = self._require()
         if self.is_recording():
-            raise ObsError("OBS 已經在錄影了，先手動停止再重跑，避免蓋掉現有檔案")
+            log.warning(
+                "OBS 已經在錄影，沿用既有的那一段（檔名不會改成 %s）",
+                filename or "預設",
+            )
+            return "continued"
         if filename:
             self.set_filename(filename)
         client.start_record()
         log.info("OBS 開始錄影（檔名 %s）", filename or "OBS 預設")
+        return "started"
 
     def stop_recording(self) -> str | None:
         """停止錄影，回傳輸出檔案路徑（OBS 版本較舊時可能為 None）。"""
@@ -196,8 +206,9 @@ class NullObsController(ObsController):
     def restore_filename_format(self) -> None:
         return None
 
-    def start_recording(self, filename: str | None = None) -> None:
+    def start_recording(self, filename: str | None = None) -> str:
         log.warning("[無 OBS] 略過開始錄影（原本檔名 %s）", filename)
+        return "skipped"
 
     def stop_recording(self) -> str | None:
         log.warning("[無 OBS] 略過停止錄影")
