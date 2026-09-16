@@ -40,6 +40,9 @@ class RunOptions:
     # 錄完把檔案收進「每堂課一個資料夾」，順便抓附件。留 None = 維持舊行為。
     library_root: Path | None = None
     fetch_attachments: bool = True
+    # 錄影期間每隔幾秒確認影片真的還在播。0 = 不監看（回到只睡到結束的舊行為）。
+    watch_every: int = 30
+    watch_max_reloads: int = 3
 
 
 class _StopFlag:
@@ -212,7 +215,7 @@ class Runner:
             return
 
         try:
-            sleep_until(item.stop_at, self._stop, label="錄影中", countdown_every=self.options.countdown_every)
+            self._record_until(item)
         except Interrupted:
             result = "interrupted"
             note = (note + "；" if note else "") + "使用者中斷，已提前收尾"
@@ -253,6 +256,78 @@ class Runner:
             if next_open_at is not None:
                 rest_until = min(rest_until, next_open_at)
             sleep_until(rest_until, self._stop, label="場間休息", countdown_every=0)
+
+    # ── 錄影期間的監看 ──────────────────────────────────────────────────
+    def _record_until(self, item: PlanItem) -> None:
+        """睡到這場結束，中間定期確認影片還在播，卡住就出手救。
+
+        會需要這段，是因為畫質鎖死 1080p 之後 ABR 不能自己降階 —— 網路一抖
+        不再是「畫質變差」，而是直接轉圈圈，而且錄下來才會發現。所以救援的
+        第一步就是把鎖解掉，把降階的能力還給播放器。
+
+        三段式，一段沒救起來才升到下一段：
+          1. 第一次偵測到卡住 → 只記一筆，可能只是短暫緩衝
+          2. 連續兩次 → 解鎖畫質回 auto
+          3. 連續三次 → 重載頁面（重載後不再鎖畫質），最多幾次
+        """
+        label = "錄影中"
+        every = self.options.watch_every
+        page = getattr(self.browser, "_page", None)
+        if not every or page is None:
+            sleep_until(item.stop_at, self._stop, label=label,
+                        countdown_every=self.options.countdown_every)
+            return
+
+        strikes = 0
+        reloads = 0
+        relaxed = False
+        while True:
+            self._stop.check()
+            wake = min(now_utc() + timedelta(seconds=every), item.stop_at)
+            sleep_until(wake, self._stop, label=label,
+                        countdown_every=self.options.countdown_every)
+            if now_utc() >= item.stop_at:
+                return
+
+            try:
+                healthy, why = self.browser.verify_playing(seconds=5)
+            except Exception as exc:  # 監看本身絕對不能把錄影搞掛
+                log.debug("監看播放狀態時出錯：%s", exc, exc_info=True)
+                continue
+
+            if healthy:
+                if strikes:
+                    log.info("影片恢復正常播放")
+                strikes = 0
+                continue
+
+            strikes += 1
+            log.warning("影片看起來卡住了（第 %d 次）：%s", strikes, why)
+            if strikes == 2 and not relaxed:
+                relaxed = self.browser.relax_quality()
+                if not relaxed:
+                    strikes = 3  # 沒有畫質可解，直接跳到重載那一段
+            if strikes >= 3:
+                if not item.session.url:
+                    # 沒網址就是使用者自己開的頁面，重載會把他開的東西弄掉。
+                    log.error("影片持續卡住，但這場沒有網址可重載 —— 請手動處理瀏覽器")
+                    strikes = 0
+                    continue
+                if reloads >= self.options.watch_max_reloads:
+                    log.error(
+                        "重載 %d 次仍然卡住，不再嘗試 —— 錄影繼續，但畫面可能是轉圈圈。"
+                        "現在手動處理那個瀏覽器還來得及。", reloads,
+                    )
+                    strikes = 0  # 別再反覆重載，交給人
+                    continue
+                reloads += 1
+                log.warning("重新載入課程頁（第 %d 次）", reloads)
+                try:
+                    # 重載後不鎖畫質：卡住的原因很可能就是它。
+                    self.browser.open_session(item.session.url, lock_quality=False)
+                except Exception as exc:
+                    log.error("重載失敗，錄影繼續：%s", str(exc)[:120])
+                strikes = 0
 
     # ── 課程資料夾 ──────────────────────────────────────────────────────
     def _file_into_library(

@@ -25,6 +25,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "gap_seconds": 15,
         "filename_template": "{start_local:%Y%m%d_%H%M}_{code}_{title}",
         "filename_max_length": 120,
+        # 錄影期間每隔幾秒確認影片還在播；0 = 不監看
+        "watch_every": 30,
+        "watch_max_reloads": 3,
     },
     "obs": {
         "host": "localhost",

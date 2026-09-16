@@ -166,6 +166,31 @@ class Navigator:
         log.info("畫質鎖定 %sp（可選：%s）", picked, result.get("all"))
         return True, note
 
+    def relax_quality(self) -> bool:
+        """把畫質解鎖回 auto（每一階都重新啟用）。
+
+        鎖死 1080p 的代價是 ABR 不能自己降階 —— 網路一抖就不是畫質變差，
+        而是直接轉圈圈。監看到卡住時第一件事就是把這個代價還回去。
+        """
+        try:
+            ok = self.page.evaluate(
+                """() => {
+                  const el = document.querySelector('.video-js');
+                  if (!el || !window.videojs) return false;
+                  const qs = window.videojs(el.id).qualityLevels &&
+                             window.videojs(el.id).qualityLevels();
+                  if (!qs || !qs.length) return false;
+                  for (let i = 0; i < qs.length; i++) qs[i].enabled = true;
+                  return true;
+                }"""
+            )
+        except Exception as exc:
+            log.warning("解鎖畫質失敗：%s", str(exc)[:80])
+            return False
+        if ok:
+            log.warning("已把畫質解鎖回 auto，讓播放器自己降階求穩")
+        return bool(ok)
+
     def center_player(self) -> bool:
         """把播放器捲到畫面正中央。
 
@@ -236,7 +261,7 @@ class Navigator:
             )
         return False, f"影片沒有前進（paused={after['paused']}、readyState={after['ready']}）"
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
         raise NotImplementedError
 
     def leave_session(self) -> None:
@@ -263,7 +288,7 @@ class OsOpenNavigator(Navigator):
     def close(self) -> None:
         return None
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
         log.info("交給系統開啟 %s", url)
         opened = False
         if platform.system() == "Windows":
@@ -397,7 +422,12 @@ class AttachNavigator(Navigator):
             log.debug("檢查課程頁是否存在時出錯", exc_info=True)
             return False
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
+        """開課程頁並確保它在播。
+
+        lock_quality=False 用在監看救援的重載：那時候卡住的原因很可能就是畫質
+        鎖太高，再鎖一次等於把剛救回來的又推回坑裡。
+        """
         result: dict[str, Any] = {"url": url, "played": False, "navigator": self.label}
         self.goto(url)
         self.dismiss_popups()
@@ -434,7 +464,7 @@ class AttachNavigator(Navigator):
             if not ok:
                 log.warning("沒能解除靜音，這場可能會沒聲音：%s", why)
                 result["note"] = (str(result.get("note") or "") + "；" if result.get("note") else "") + f"靜音未解除（{why}）"
-        if self.settings.preferred_height:
+        if self.settings.preferred_height and lock_quality:
             ok, why = self.force_quality(self.settings.preferred_height)
             result["quality"] = ok
             if why:

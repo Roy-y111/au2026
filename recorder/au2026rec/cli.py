@@ -966,6 +966,8 @@ def _run(cfg: Config, items: Sequence[PlanItem], args: argparse.Namespace) -> in
         skip_past=not args.include_past,
         library_root=cfg.library_root() if cfg.get("library", "enabled") else None,
         fetch_attachments=bool(cfg.get("library", "attachments")),
+        watch_every=int(cfg.get("recording", "watch_every")),
+        watch_max_reloads=int(cfg.get("recording", "watch_max_reloads")),
     )
     runner = Runner(navigator, obs, options)
     try:

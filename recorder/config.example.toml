@@ -38,6 +38,13 @@ gap_seconds = 15
 filename_template = "{start_local:%Y%m%d_%H%M}_{code}_{title}"
 # 檔名最長字元數（Windows 路徑限制）
 filename_max_length = 120
+# 錄影期間每隔幾秒確認影片真的還在播（0 = 不監看）。
+# 卡住時的三段式救援：記一筆 → 解鎖畫質回 auto → 重載頁面。
+# 這是鎖死 preferred_height 的配套：鎖住畫質等於關掉 ABR 自動降階，
+# 網路一抖就不是畫質變差而是轉圈圈，所以要有人盯著幫它解開。
+watch_every = 30
+# 最多重載幾次，超過就只記錯誤交給人處理（錄影不會停）
+watch_max_reloads = 3
 
 [obs]
 host = "localhost"
