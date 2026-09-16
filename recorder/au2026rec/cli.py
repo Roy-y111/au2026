@@ -15,6 +15,7 @@
     au2026rec run --live           只錄直播，照課表時間（活動期間）
     au2026rec run --ondemand --queue  排隊補錄 On-demand，一場接一場（活動之後）
     au2026rec run                  全部照課表時間錄
+    au2026rec download             直接下載 On-demand（影片+字幕+附件）
     au2026rec srt <影片或資料夾>   錄好的影片 → 英文逐字稿（Groq）→ 繁中字幕（agy）
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from au2026rec import __version__, obslocal
-from au2026rec import browserlaunch, obsscene, subtitle
+from au2026rec import browserlaunch, download, obsscene, subtitle
 from au2026rec.browser import (
     BrowserError,
     BrowserSettings,
@@ -81,8 +82,9 @@ def setup_console() -> None:
 
 
 DISCLAIMER = (
-    "本工具錄影僅供個人學習與課後複習；請遵守 AU 使用條款與著作權法。"
-    "違法或侵權使用與開發者無關，詳見 README 的免責聲明。"
+    "錄影與下載僅供個人學習複習。這些行為可能違反 AU 使用條款，"
+    "包含帳號被停權的風險 —— 使用者自負全部後果，與開發者無關。"
+    "使用前請讀 DISCLAIMER.md，使用即視為同意。"
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -127,7 +129,30 @@ def _load_sessions(cfg: Config) -> tuple[list[Any], list[str]]:
             "找不到 catalog.json，課程網址只能靠課表自帶的 URL 欄。"
             "建議先執行 au2026rec catalog。",
         )
+    stale = _schedule_age_warning(cfg.resolve("schedule", "file"))
+    if stale:
+        warnings.insert(0, stale)
     return sessions, warnings
+
+
+def _schedule_age_warning(path: Path, *, stale_days: int = 1) -> str:
+    """課表放久了就該重抓。
+
+    官方在活動期間會臨時撤場（實例：9/15 匯出的課表有 48 場，9/16 再匯出只剩
+    43 場，被撤掉的 5 場網址全部變成空頁面）。課表是使用者自己匯出的檔案，
+    程式沒辦法幫他更新，只能在它舊了的時候提醒。
+    """
+    try:
+        age_days = (time.time() - path.stat().st_mtime) / 86_400
+    except OSError:
+        return ""
+    if age_days < stale_days:
+        return ""
+    return (
+        f"這份課表是 {age_days:.0f} 天前匯出的。"
+        "官方會臨時撤場，撤掉的課網址會變成空頁面 —— "
+        "建議重新到 AU 網站的 My Schedule 匯出一份覆蓋掉，順便跑 au2026rec catalog。"
+    )
 
 
 def _filter_sessions(
@@ -179,6 +204,7 @@ def _browser_settings(cfg: Config) -> BrowserSettings:
         dismiss_selectors=list(cfg.get("browser", "dismiss_selectors")),
         center_player=bool(cfg.get("browser", "center_player")),
         unmute=bool(cfg.get("browser", "unmute")),
+        preferred_height=int(cfg.get("browser", "preferred_height")),
         close_page_after=bool(cfg.get("browser", "close_page_after")),
     )
 
@@ -961,6 +987,10 @@ def _run(cfg: Config, items: Sequence[PlanItem], args: argparse.Namespace) -> in
         local_tz=get_zone(str(cfg.get("schedule", "local_timezone"))),
         report_file=cfg.resolve("paths", "report_file"),
         skip_past=not args.include_past,
+        library_root=cfg.library_root() if cfg.get("library", "enabled") else None,
+        fetch_attachments=bool(cfg.get("library", "attachments")),
+        watch_every=int(cfg.get("recording", "watch_every")),
+        watch_max_reloads=int(cfg.get("recording", "watch_max_reloads")),
     )
     runner = Runner(navigator, obs, options)
     try:
@@ -1048,6 +1078,99 @@ def cmd_test_record(args: argparse.Namespace) -> int:
     )
     print(f"試錄 {session.label()}，約 {args.seconds} 秒後結束")
     return _run(cfg, items, args)
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    """直接下載 On-demand 課程（影片 + 字幕 + 附件），不用錄影、不用等時間。"""
+    cfg = _load(args)
+    setup_logging(cfg.resolve("paths", "log_file"), args.verbose)
+    print(f"⚠ {DISCLAIMER}")
+    print("  下載功能的條款風險比螢幕錄影更高，包含帳號被停權的可能。詳見 DISCLAIMER.md。\n")
+
+    sessions, warnings = _load_sessions(cfg)
+    if warnings:
+        _print_warnings(warnings)
+    live_modes = list(cfg.get("schedule", "live_modes"))
+    if args.only:
+        wanted = {code.upper() for code in args.only}
+        sessions = [s for s in sessions if s.code.upper() in wanted]
+    else:
+        # 直播沒有隨選檔可抓，預設只處理 On-demand。
+        sessions = [s for s in sessions if not s.is_live(live_modes)]
+    sessions = [s for s in sessions if s.url]
+    if not sessions:
+        print("沒有可下載的場次（直播要用錄影，缺網址的請先用 au2026rec url 補）")
+        return 1
+
+    settings = download.DownloadSettings(
+        root=cfg.library_root(),
+        height=args.height or int(cfg.get("library", "download_height")),
+        ffmpeg=str(cfg.get("library", "ffmpeg")),
+        subtitles=bool(cfg.get("library", "subtitles")) and not args.no_subtitles,
+        attachments=bool(cfg.get("library", "attachments")) and not args.no_attachments,
+        manifest_wait_seconds=int(cfg.get("library", "manifest_wait_seconds")),
+        force=args.force,
+    )
+    print(f"要下載 {len(sessions)} 場，畫質 {settings.height}p，收進 {settings.root}")
+    for session in sessions:
+        print(f"  · {session.code} {session.title[:60]}")
+    if not args.yes:
+        try:
+            if input("\n開始？按 Enter 繼續，輸入 n 取消：").strip().lower().startswith("n"):
+                print("已取消")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            return 130
+
+    try:
+        navigator = _make_navigator(cfg)
+    except BrowserError as exc:
+        print(f"✗ {exc}")
+        return 1
+    if not isinstance(navigator, AttachNavigator):
+        navigator.close()
+        print("下載需要接得上瀏覽器，請先用選單的「開瀏覽器登入 AU2026」，並確認 mode = attach。")
+        return 1
+
+    failed: list[tuple[Any, str]] = []
+    try:
+        for position, session in enumerate(sessions, start=1):
+            print(f"\n── [{position}/{len(sessions)}] {session.label()} ──")
+            try:
+                result = download.download_session(navigator, session, settings)
+            except download.DownloadError as exc:
+                print(f"  ✗ {exc}")
+                failed.append((session, str(exc)))
+            except KeyboardInterrupt:
+                print("\n已中斷（已下載完的場次都留著，重跑會從沒抓到的接下去）")
+                break
+            except Exception as exc:  # 一場壞掉不該毀掉整批
+                print(f"  ✗ 未預期的錯誤：{exc}")
+                failed.append((session, str(exc)))
+            else:
+                print(f"  ✓ {result['folder']}")
+    finally:
+        navigator.close()
+
+    if not failed:
+        print(f"\n✓ 全部完成，收在 {settings.root}")
+        return 0
+
+    # 網址失效要另外列：那不是程式壞了，是課表對照表過期，而且使用者補得回來。
+    stale = [s for s, reason in failed if "No session to display" in reason]
+    others = [(s, r) for s, r in failed if "No session to display" not in r]
+    print(f"\n{len(failed)} 場沒抓到：")
+    if stale:
+        print(f"\n  ● 網址已失效（該場被撤下或換了網址）：{'、'.join(s.code for s in stale)}")
+        print("    這是課表過期，不是程式問題。官方會臨時撤場，你的課表不會自己更新。")
+        print("    到 AU 網站的 My Schedule 重新匯出一份覆蓋掉舊的，然後：")
+        print("      au2026rec catalog")
+        print("    如果那幾場其實還在、只是換了網址，就單場補上：")
+        print(f"      au2026rec url {stale[0].code} <新網址>")
+        print("    補完重跑 download 就會接著抓（已抓好的會自動跳過）。")
+    for session, reason in others:
+        print(f"\n  ✗ {session.code}：{reason[:160]}")
+    return 1
 
 
 # ── 參數 ────────────────────────────────────────────────────────────────
@@ -1176,6 +1299,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_srt.add_argument("--force", action="store_true", help="字幕已存在也重做")
     p_srt.set_defaults(func=cmd_srt)
 
+    p_dl = sub.add_parser(
+        "download", help="直接下載 On-demand 課程（影片 + 字幕 + 附件），不用錄影"
+    )
+    p_dl.add_argument("--only", action="append", help="只抓這些 session code，可重複指定")
+    p_dl.add_argument("--height", type=int, help="畫質高度（預設讀設定檔，720）")
+    p_dl.add_argument("--no-subtitles", action="store_true", help="不要抓官方字幕")
+    p_dl.add_argument("--no-attachments", action="store_true", help="不要抓講義與簡報")
+    p_dl.add_argument("--force", action="store_true", help="已經抓過的也重抓")
+    p_dl.add_argument("-y", "--yes", action="store_true", help="不要問確認，直接開始")
+    p_dl.set_defaults(func=cmd_download)
+
     p_run = sub.add_parser("run", help="照課表無人值守執行")
     p_run.add_argument("--only", action="append", help="只錄這些 session code，可重複指定")
     p_run.add_argument("--include-past", action="store_true", help="不要略過已結束的場次")
@@ -1201,6 +1335,7 @@ MENU = [
     ("7", "▶ 活動期間：只錄直播，照課表時間", ["run", "--live"]),
     ("8", "▶ 活動之後：排隊補錄 On-demand，一場接一場", ["run", "--ondemand", "--queue"]),
     ("9", "▶ 全部照課表時間錄（直播與 On-demand 混排）", ["run"]),
+    ("d", "▶ 直接下載 On-demand（影片+字幕+附件，比錄影快很多）", ["download"]),
     ("p", "找播放鍵選擇器（需要輸入課程代碼）", ["probe"]),
     ("u", "查／補某一堂課的網址（臨時補用）", ["url"]),
     ("c", "重新建立課程網址對照表", ["catalog"]),
@@ -1214,9 +1349,12 @@ def interactive_menu() -> int:
     parser = build_parser()
     print(f"\nau2026rec {__version__} — AU2026 自動開課 + OBS 錄影")
     print(f"⚠ {DISCLAIMER}\n")
-    print("※ 真實課程頁還沒有人驗證過（網址與播放鍵都是事前推測的）。")
-    print("  但 OBS 錄的是整個螢幕，所以就算導頁或播放出錯，畫面照樣照時間錄。")
+    print("※ 直播與隨選都已在 2026-09-16 的真實課程頁跑通（自動導頁、自動播放、")
+    print("  解除靜音、下載影片與附件）。剩下會出狀況的多半是課表與網址本身。")
+    print("  OBS 錄的是整個螢幕，所以就算導頁或播放出錯，畫面照樣照時間錄。")
     print("  出狀況時你可以自己改：")
+    print("    · 開到空頁面（No session to display）→ 該場被撤下或換了網址，")
+    print("      選 c 更新對照表，或選 u 單場補網址")
     print("    · 網址錯或查不到 → 選 u（或 au2026rec url 課程代碼 網址）")
     print("    · 影片沒自動播   → 選 p 找選擇器，貼進 config.toml 的 play_selectors")
     print("    · 完全沒切頁     → 自己把那頁開起來就好，錄影已經在跑")

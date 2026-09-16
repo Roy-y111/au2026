@@ -26,6 +26,9 @@ from typing import Any, Sequence
 
 log = logging.getLogger(__name__)
 
+# 「查無此課」的頁面長這樣：HTTP 200、版面正常，只有內容區寫這一句。
+_MISSING_SESSION = "text=No session to display"
+
 MODE_ATTACH = "attach"
 MODE_OPEN = "open"
 MODES = (MODE_ATTACH, MODE_OPEN)
@@ -44,6 +47,7 @@ class BrowserSettings:
     play_selectors: Sequence[str] = field(default_factory=list)
     center_player: bool = True
     unmute: bool = True
+    preferred_height: int = 1080
     dismiss_selectors: Sequence[str] = field(default_factory=list)
     close_page_after: bool = True
 
@@ -128,6 +132,65 @@ class Navigator:
             log.info("第 %d 次解除靜音後又被設回去了，再試", attempt)
         return False, last or "重試多次仍然是靜音"
 
+
+    def force_quality(self, height: int) -> tuple[bool, str]:
+        """把畫質鎖到指定高度（1080 = 1080p），避免 ABR 自動掉到低畫質。
+
+        video.js / Brightcove 的 qualityLevels 清單裡每一階都有 enabled 旗標；
+        只留想要的那一階，播放器就不會再自動往下掉。找不到剛好相符的就選最高的。
+        """
+        try:
+            result = self.page.evaluate(
+                """(want) => {
+                  const el = document.querySelector('.video-js');
+                  if (!el || !window.videojs) return {ok: false, why: '頁面上沒有 video.js'};
+                  const p = window.videojs(el.id);
+                  const qs = p.qualityLevels && p.qualityLevels();
+                  if (!qs || !qs.length) return {ok: false, why: '播放器沒有提供畫質清單'};
+                  const levels = [];
+                  for (let i = 0; i < qs.length; i++) levels.push({i: i, h: qs[i].height || 0});
+                  let pick = levels.find(l => l.h === want);
+                  if (!pick) pick = levels.reduce((a, b) => (b.h > a.h ? b : a));
+                  for (let i = 0; i < qs.length; i++) qs[i].enabled = (i === pick.i);
+                  return {ok: true, picked: pick.h,
+                          all: levels.map(l => l.h).sort((a, b) => a - b)};
+                }""",
+                height,
+            )
+        except Exception as exc:
+            return False, f"設定畫質失敗：{exc}"
+        if not result.get("ok"):
+            return False, str(result.get("why") or "未知原因")
+        picked = result.get("picked")
+        note = "" if picked == height else f"沒有 {height}p，改用最高的 {picked}p"
+        log.info("畫質鎖定 %sp（可選：%s）", picked, result.get("all"))
+        return True, note
+
+    def relax_quality(self) -> bool:
+        """把畫質解鎖回 auto（每一階都重新啟用）。
+
+        鎖死 1080p 的代價是 ABR 不能自己降階 —— 網路一抖就不是畫質變差，
+        而是直接轉圈圈。監看到卡住時第一件事就是把這個代價還回去。
+        """
+        try:
+            ok = self.page.evaluate(
+                """() => {
+                  const el = document.querySelector('.video-js');
+                  if (!el || !window.videojs) return false;
+                  const qs = window.videojs(el.id).qualityLevels &&
+                             window.videojs(el.id).qualityLevels();
+                  if (!qs || !qs.length) return false;
+                  for (let i = 0; i < qs.length; i++) qs[i].enabled = true;
+                  return true;
+                }"""
+            )
+        except Exception as exc:
+            log.warning("解鎖畫質失敗：%s", str(exc)[:80])
+            return False
+        if ok:
+            log.warning("已把畫質解鎖回 auto，讓播放器自己降階求穩")
+        return bool(ok)
+
     def center_player(self) -> bool:
         """把播放器捲到畫面正中央。
 
@@ -198,7 +261,7 @@ class Navigator:
             )
         return False, f"影片沒有前進（paused={after['paused']}、readyState={after['ready']}）"
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
         raise NotImplementedError
 
     def leave_session(self) -> None:
@@ -225,7 +288,7 @@ class OsOpenNavigator(Navigator):
     def close(self) -> None:
         return None
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
         log.info("交給系統開啟 %s", url)
         opened = False
         if platform.system() == "Windows":
@@ -347,13 +410,40 @@ class AttachNavigator(Navigator):
             except Exception:
                 continue
 
-    def open_session(self, url: str) -> dict[str, Any]:
+    def session_is_missing(self) -> bool:
+        """這一頁是不是「查無此課」。
+
+        撤掉或改過 id 的場次**不會回 404** —— 伺服器照樣回 200，版面照樣長出來，
+        只是內容區塊寫著 No session to display。所以只能看內文判斷。
+        """
+        try:
+            return bool(self.page.locator(_MISSING_SESSION).count())
+        except Exception:
+            log.debug("檢查課程頁是否存在時出錯", exc_info=True)
+            return False
+
+    def open_session(self, url: str, *, lock_quality: bool = True) -> dict[str, Any]:
+        """開課程頁並確保它在播。
+
+        lock_quality=False 用在監看救援的重載：那時候卡住的原因很可能就是畫質
+        鎖太高，再鎖一次等於把剛救回來的又推回坑裡。
+        """
         result: dict[str, Any] = {"url": url, "played": False, "navigator": self.label}
         self.goto(url)
         self.dismiss_popups()
         if self.settings.settle_seconds:
             time.sleep(self.settings.settle_seconds)
         self.dismiss_popups()
+
+        if self.session_is_missing():
+            result["missing"] = True
+            result["note"] = "課程頁顯示 No session to display（網址失效或該場已撤下）"
+            log.error(
+                "這個網址打開是空的（No session to display）—— 該場很可能已經被官方撤下。"
+                "到 AU 網站的 My Schedule 重新匯出課表覆蓋掉舊的，再跑 au2026rec catalog；"
+                "單場要補的話用 au2026rec url <課程代碼> <網址>。"
+            )
+            return result
 
         # 直播通常進頁面就自動播。這時候絕對不能去點播放器 ——
         # video.js 點畫面會 toggle 暫停，等於把正在播的直播按停。
@@ -374,6 +464,13 @@ class AttachNavigator(Navigator):
             if not ok:
                 log.warning("沒能解除靜音，這場可能會沒聲音：%s", why)
                 result["note"] = (str(result.get("note") or "") + "；" if result.get("note") else "") + f"靜音未解除（{why}）"
+        if self.settings.preferred_height and lock_quality:
+            ok, why = self.force_quality(self.settings.preferred_height)
+            result["quality"] = ok
+            if why:
+                log.info("畫質：%s", why)
+            elif not ok:
+                log.info("畫質沒鎖成（不影響錄影，只是可能被 ABR 調低）")
         if self.settings.center_player:
             result["centered"] = self.center_player()
         if playing:
