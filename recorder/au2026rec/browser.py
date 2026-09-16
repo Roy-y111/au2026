@@ -44,6 +44,7 @@ class BrowserSettings:
     play_selectors: Sequence[str] = field(default_factory=list)
     center_player: bool = True
     unmute: bool = True
+    preferred_height: int = 1080
     dismiss_selectors: Sequence[str] = field(default_factory=list)
     close_page_after: bool = True
 
@@ -127,6 +128,40 @@ class Navigator:
                 return True, ""
             log.info("第 %d 次解除靜音後又被設回去了，再試", attempt)
         return False, last or "重試多次仍然是靜音"
+
+
+    def force_quality(self, height: int) -> tuple[bool, str]:
+        """把畫質鎖到指定高度（1080 = 1080p），避免 ABR 自動掉到低畫質。
+
+        video.js / Brightcove 的 qualityLevels 清單裡每一階都有 enabled 旗標；
+        只留想要的那一階，播放器就不會再自動往下掉。找不到剛好相符的就選最高的。
+        """
+        try:
+            result = self.page.evaluate(
+                """(want) => {
+                  const el = document.querySelector('.video-js');
+                  if (!el || !window.videojs) return {ok: false, why: '頁面上沒有 video.js'};
+                  const p = window.videojs(el.id);
+                  const qs = p.qualityLevels && p.qualityLevels();
+                  if (!qs || !qs.length) return {ok: false, why: '播放器沒有提供畫質清單'};
+                  const levels = [];
+                  for (let i = 0; i < qs.length; i++) levels.push({i: i, h: qs[i].height || 0});
+                  let pick = levels.find(l => l.h === want);
+                  if (!pick) pick = levels.reduce((a, b) => (b.h > a.h ? b : a));
+                  for (let i = 0; i < qs.length; i++) qs[i].enabled = (i === pick.i);
+                  return {ok: true, picked: pick.h,
+                          all: levels.map(l => l.h).sort((a, b) => a - b)};
+                }""",
+                height,
+            )
+        except Exception as exc:
+            return False, f"設定畫質失敗：{exc}"
+        if not result.get("ok"):
+            return False, str(result.get("why") or "未知原因")
+        picked = result.get("picked")
+        note = "" if picked == height else f"沒有 {height}p，改用最高的 {picked}p"
+        log.info("畫質鎖定 %sp（可選：%s）", picked, result.get("all"))
+        return True, note
 
     def center_player(self) -> bool:
         """把播放器捲到畫面正中央。
@@ -374,6 +409,13 @@ class AttachNavigator(Navigator):
             if not ok:
                 log.warning("沒能解除靜音，這場可能會沒聲音：%s", why)
                 result["note"] = (str(result.get("note") or "") + "；" if result.get("note") else "") + f"靜音未解除（{why}）"
+        if self.settings.preferred_height:
+            ok, why = self.force_quality(self.settings.preferred_height)
+            result["quality"] = ok
+            if why:
+                log.info("畫質：%s", why)
+            elif not ok:
+                log.info("畫質沒鎖成（不影響錄影，只是可能被 ABR 調低）")
         if self.settings.center_player:
             result["centered"] = self.center_player()
         if playing:

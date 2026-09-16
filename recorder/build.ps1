@@ -64,7 +64,7 @@ if (Test-Path $exe) {
 
     # 把「放在 exe 旁邊才有用」的檔案一起帶過去
     $outDir = Split-Path $exe -Parent
-    foreach ($f in @('使用說明.md', 'catalog.json')) {
+    foreach ($f in @('使用說明.md', 'DISCLAIMER.md', 'catalog.json')) {
         if (Test-Path $f) { Copy-Item $f $outDir -Force }
     }
 
@@ -85,7 +85,7 @@ if (Test-Path $exe) {
         # 才不會哪天多出個新檔案就默默被壓進去。
         # dist\au2026rec 裡通常還有使用者自己的 config.toml（內含 OBS 密碼）、
         # 課表、瀏覽器 profile 與 logs —— 那些絕對不能外流。
-        $allow = @('au2026rec.exe', '_internal', 'catalog.json', '使用說明.md')
+        $allow = @('au2026rec.exe', '_internal', 'catalog.json', '使用說明.md', 'DISCLAIMER.md')
 
         $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("au2026rec-pack-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
         $pkg = Join-Path $staging 'au2026rec'

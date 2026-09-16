@@ -15,6 +15,7 @@
     au2026rec run --live           只錄直播，照課表時間（活動期間）
     au2026rec run --ondemand --queue  排隊補錄 On-demand，一場接一場（活動之後）
     au2026rec run                  全部照課表時間錄
+    au2026rec download             直接下載 On-demand（影片+字幕+附件）
     au2026rec srt <影片或資料夾>   錄好的影片 → 英文逐字稿（Groq）→ 繁中字幕（agy）
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from au2026rec import __version__, obslocal
-from au2026rec import browserlaunch, obsscene, subtitle
+from au2026rec import browserlaunch, download, obsscene, subtitle
 from au2026rec.browser import (
     BrowserError,
     BrowserSettings,
@@ -81,8 +82,9 @@ def setup_console() -> None:
 
 
 DISCLAIMER = (
-    "本工具錄影僅供個人學習與課後複習；請遵守 AU 使用條款與著作權法。"
-    "違法或侵權使用與開發者無關，詳見 README 的免責聲明。"
+    "錄影與下載僅供個人學習複習。這些行為可能違反 AU 使用條款，"
+    "包含帳號被停權的風險 —— 使用者自負全部後果，與開發者無關。"
+    "使用前請讀 DISCLAIMER.md，使用即視為同意。"
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -179,6 +181,7 @@ def _browser_settings(cfg: Config) -> BrowserSettings:
         dismiss_selectors=list(cfg.get("browser", "dismiss_selectors")),
         center_player=bool(cfg.get("browser", "center_player")),
         unmute=bool(cfg.get("browser", "unmute")),
+        preferred_height=int(cfg.get("browser", "preferred_height")),
         close_page_after=bool(cfg.get("browser", "close_page_after")),
     )
 
@@ -961,6 +964,8 @@ def _run(cfg: Config, items: Sequence[PlanItem], args: argparse.Namespace) -> in
         local_tz=get_zone(str(cfg.get("schedule", "local_timezone"))),
         report_file=cfg.resolve("paths", "report_file"),
         skip_past=not args.include_past,
+        library_root=cfg.resolve("library", "root") if cfg.get("library", "enabled") else None,
+        fetch_attachments=bool(cfg.get("library", "attachments")),
     )
     runner = Runner(navigator, obs, options)
     try:
@@ -1048,6 +1053,84 @@ def cmd_test_record(args: argparse.Namespace) -> int:
     )
     print(f"試錄 {session.label()}，約 {args.seconds} 秒後結束")
     return _run(cfg, items, args)
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    """直接下載 On-demand 課程（影片 + 字幕 + 附件），不用錄影、不用等時間。"""
+    cfg = _load(args)
+    setup_logging(cfg.resolve("paths", "log_file"), args.verbose)
+    print(f"⚠ {DISCLAIMER}")
+    print("  下載功能的條款風險比螢幕錄影更高，包含帳號被停權的可能。詳見 DISCLAIMER.md。\n")
+
+    sessions, warnings = _load_sessions(cfg)
+    if warnings:
+        _print_warnings(warnings)
+    live_modes = list(cfg.get("schedule", "live_modes"))
+    if args.only:
+        wanted = {code.upper() for code in args.only}
+        sessions = [s for s in sessions if s.code.upper() in wanted]
+    else:
+        # 直播沒有隨選檔可抓，預設只處理 On-demand。
+        sessions = [s for s in sessions if not s.is_live(live_modes)]
+    sessions = [s for s in sessions if s.url]
+    if not sessions:
+        print("沒有可下載的場次（直播要用錄影，缺網址的請先用 au2026rec url 補）")
+        return 1
+
+    settings = download.DownloadSettings(
+        root=cfg.resolve("library", "root"),
+        height=args.height or int(cfg.get("library", "download_height")),
+        ffmpeg=str(cfg.get("library", "ffmpeg")),
+        subtitles=bool(cfg.get("library", "subtitles")) and not args.no_subtitles,
+        attachments=bool(cfg.get("library", "attachments")) and not args.no_attachments,
+        manifest_wait_seconds=int(cfg.get("library", "manifest_wait_seconds")),
+        force=args.force,
+    )
+    print(f"要下載 {len(sessions)} 場，畫質 {settings.height}p，收進 {settings.root}")
+    for session in sessions:
+        print(f"  · {session.code} {session.title[:60]}")
+    if not args.yes:
+        try:
+            if input("\n開始？按 Enter 繼續，輸入 n 取消：").strip().lower().startswith("n"):
+                print("已取消")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            return 130
+
+    try:
+        navigator = _make_navigator(cfg)
+    except BrowserError as exc:
+        print(f"✗ {exc}")
+        return 1
+    if not isinstance(navigator, AttachNavigator):
+        navigator.close()
+        print("下載需要接得上瀏覽器，請先用選單的「開瀏覽器登入 AU2026」，並確認 mode = attach。")
+        return 1
+
+    failed: list[tuple[Any, str]] = []
+    try:
+        for position, session in enumerate(sessions, start=1):
+            print(f"\n── [{position}/{len(sessions)}] {session.label()} ──")
+            try:
+                result = download.download_session(navigator, session, settings)
+            except download.DownloadError as exc:
+                print(f"  ✗ {exc}")
+                failed.append((session, str(exc)))
+            except KeyboardInterrupt:
+                print("\n已中斷（已下載完的場次都留著，重跑會從沒抓到的接下去）")
+                break
+            except Exception as exc:  # 一場壞掉不該毀掉整批
+                print(f"  ✗ 未預期的錯誤：{exc}")
+                failed.append((session, str(exc)))
+            else:
+                print(f"  ✓ {result['folder']}")
+    finally:
+        navigator.close()
+
+    print()
+    for session, reason in failed:
+        print(f"  ✗ {session.code}：{reason[:120]}")
+    return 1 if failed else 0
 
 
 # ── 參數 ────────────────────────────────────────────────────────────────
@@ -1176,6 +1259,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_srt.add_argument("--force", action="store_true", help="字幕已存在也重做")
     p_srt.set_defaults(func=cmd_srt)
 
+    p_dl = sub.add_parser(
+        "download", help="直接下載 On-demand 課程（影片 + 字幕 + 附件），不用錄影"
+    )
+    p_dl.add_argument("--only", action="append", help="只抓這些 session code，可重複指定")
+    p_dl.add_argument("--height", type=int, help="畫質高度（預設讀設定檔，720）")
+    p_dl.add_argument("--no-subtitles", action="store_true", help="不要抓官方字幕")
+    p_dl.add_argument("--no-attachments", action="store_true", help="不要抓講義與簡報")
+    p_dl.add_argument("--force", action="store_true", help="已經抓過的也重抓")
+    p_dl.add_argument("-y", "--yes", action="store_true", help="不要問確認，直接開始")
+    p_dl.set_defaults(func=cmd_download)
+
     p_run = sub.add_parser("run", help="照課表無人值守執行")
     p_run.add_argument("--only", action="append", help="只錄這些 session code，可重複指定")
     p_run.add_argument("--include-past", action="store_true", help="不要略過已結束的場次")
@@ -1201,6 +1295,7 @@ MENU = [
     ("7", "▶ 活動期間：只錄直播，照課表時間", ["run", "--live"]),
     ("8", "▶ 活動之後：排隊補錄 On-demand，一場接一場", ["run", "--ondemand", "--queue"]),
     ("9", "▶ 全部照課表時間錄（直播與 On-demand 混排）", ["run"]),
+    ("d", "▶ 直接下載 On-demand（影片+字幕+附件，比錄影快很多）", ["download"]),
     ("p", "找播放鍵選擇器（需要輸入課程代碼）", ["probe"]),
     ("u", "查／補某一堂課的網址（臨時補用）", ["url"]),
     ("c", "重新建立課程網址對照表", ["catalog"]),

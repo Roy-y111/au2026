@@ -37,6 +37,9 @@ class RunOptions:
     report_file: Path | None = None
     countdown_every: int = 30
     skip_past: bool = True
+    # 錄完把檔案收進「每堂課一個資料夾」，順便抓附件。留 None = 維持舊行為。
+    library_root: Path | None = None
+    fetch_attachments: bool = True
 
 
 class _StopFlag:
@@ -225,6 +228,9 @@ class Runner:
             result = "obs-stop-error"
             note = (note + "；" if note else "") + str(exc)
 
+        filed = self._file_into_library(item, output_path, next_open_at)
+        if filed:
+            output_path = str(filed)
         self.browser.leave_session()
         self._record_row(
             item,
@@ -247,6 +253,83 @@ class Runner:
             if next_open_at is not None:
                 rest_until = min(rest_until, next_open_at)
             sleep_until(rest_until, self._stop, label="場間休息", countdown_every=0)
+
+    # ── 課程資料夾 ──────────────────────────────────────────────────────
+    def _file_into_library(
+        self, item: PlanItem, output_path: str | None, next_open_at: datetime | None = None
+    ) -> Path | None:
+        """把這一場的錄影搬進它自己的資料夾，順便抓附件、寫 session.json。
+
+        搬檔失敗不該影響下一場 —— 錄影本體已經在 OBS 的資料夾裡了，最壞的情況
+        只是沒歸檔，人工搬也來得及。
+        """
+        root = self.options.library_root
+        if root is None:
+            return None
+        from au2026rec import bundle  # 延後匯入：沒開這功能時不必要的相依
+
+        session = item.session
+        try:
+            folder = bundle.session_folder(root, session.code, session.title)
+        except OSError as exc:
+            log.warning("建不出課程資料夾，錄影留在原處：%s", exc)
+            return None
+
+        moved: Path | None = None
+        if output_path:
+            moved = self._move_recording(Path(output_path), folder)
+
+        attachments: list[Path] = []
+        page = getattr(self.browser, "_page", None)
+        if self.options.fetch_attachments and page is not None:
+            # 抓附件要在課程頁上點按鈕，會花十幾秒。直播背靠背時這段時間比附件值錢 ——
+            # 下一場快開了就先放掉，事後用 download 指令補抓。
+            spare = (next_open_at - now_utc()).total_seconds() if next_open_at else None
+            if spare is not None and spare < 120:
+                log.info("下一場快開了（剩 %.0f 秒），這場的附件留到事後再抓", spare)
+            else:
+                attachments = bundle.fetch_attachments(page, folder)
+
+        try:
+            bundle.write_session_info(folder, session, {
+                "source": "recording",
+                "video": (moved or Path(output_path or "")).name if (moved or output_path) else "",
+                "attachments": [p.name for p in attachments],
+            })
+        except OSError as exc:
+            log.warning("寫不出 session.json：%s", exc)
+        return moved
+
+    @staticmethod
+    def _move_recording(source: Path, folder: Path) -> Path | None:
+        """等 OBS 把檔尾寫完再搬。太早搬會拿到還在寫入的檔案。"""
+        import shutil
+
+        for _ in range(30):
+            if source.exists() and source.stat().st_size > 0:
+                break
+            time.sleep(1)
+        if not source.exists():
+            log.warning("找不到錄影檔 %s，略過歸檔", source)
+            return None
+        previous = -1
+        for _ in range(30):  # 檔案大小連續兩次一樣才算寫完
+            size = source.stat().st_size
+            if size == previous:
+                break
+            previous = size
+            time.sleep(1)
+
+        target = folder / source.name
+        if target.exists():
+            target = folder / f"{source.stem}_{int(time.time())}{source.suffix}"
+        try:
+            shutil.move(str(source), str(target))
+        except OSError as exc:
+            log.warning("搬不動錄影檔（可能還被 OBS 佔用），留在 %s：%s", source, exc)
+            return None
+        log.info("錄影已歸檔：%s", target)
+        return target
 
     # ── 報告 ────────────────────────────────────────────────────────────
     def _fmt(self, moment: datetime) -> str:

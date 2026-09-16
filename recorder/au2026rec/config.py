@@ -60,7 +60,17 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         ],
         "center_player": True,
         "unmute": True,
+        "preferred_height": 1080,
         "close_page_after": True,
+    },
+    "library": {
+        "root": "AU2026",
+        "enabled": True,
+        "attachments": True,
+        "subtitles": True,
+        "download_height": 720,
+        "ffmpeg": "ffmpeg",
+        "manifest_wait_seconds": 45,
     },
     "paths": {
         "log_file": "logs/au2026rec.log",
@@ -72,6 +82,7 @@ _PATH_KEYS = {
     ("schedule", "file"),
     ("schedule", "catalog"),
     ("browser", "attach_profile_dir"),
+    ("library", "root"),
     ("paths", "log_file"),
     ("paths", "report_file"),
 }

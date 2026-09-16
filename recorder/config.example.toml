@@ -101,6 +101,8 @@ dismiss_selectors = [
 # 整個螢幕錄下來會上下留一堆空白
 # 播放器預設是靜音的，進去要幫忙打開，不然整場錄下來沒聲音
 unmute = true
+# 把播放器畫質鎖到這個高度，避免自動畫質掉到 360p/720p。0 = 不鎖（維持 auto）
+preferred_height = 1080
 center_player = true
 # 每場錄完是否把分頁導回空白頁（停掉影片與聲音）
 close_page_after = true
@@ -109,3 +111,20 @@ close_page_after = true
 # 執行紀錄輸出位置
 log_file = "logs/au2026rec.log"
 report_file = "logs/sessions.csv"
+
+[library]
+# 每堂課一個資料夾，裡面放影片(或錄影) + 字幕 + 附件 + session.json。
+# 直播錄完的檔案會搬進來，On-demand 下載的影片也放這裡。
+enabled = true
+# 課程資料夾放在哪（相對路徑以設定檔所在目錄為基準）
+root = "AU2026"
+# 要不要順便抓課程附件（講義、簡報 PDF）
+attachments = true
+# 要不要抓官方字幕（只有 download 模式拿得到；直播沒有）
+subtitles = true
+# download 指令要抓的畫質高度。720 約 1 GB/小時，1080 約 1.5 GB/小時。
+download_height = 720
+# ffmpeg 執行檔。不在 PATH 裡就填完整路徑。
+ffmpeg = "ffmpeg"
+# 等影片串流網址出現的秒數
+manifest_wait_seconds = 45
