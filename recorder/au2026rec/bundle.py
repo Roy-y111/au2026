@@ -89,18 +89,16 @@ def collect_attachment_urls(page: Any, *, wait_seconds: int = 20) -> list[Attach
     的新分頁；攔到就把那個分頁關掉，不打擾使用者正在看的畫面。
     """
     context = page.context
-    grabbed: list[str] = []
+    opened: list[Any] = []
 
-    def on_page(new_page: Any) -> None:
-        try:
-            url = new_page.url
-            if any(marker in url for marker in ATTACHMENT_MARKERS):
-                grabbed.append(url)
-                new_page.close()
-        except Exception:
-            log.debug("處理附件分頁時出錯", exc_info=True)
+    # 只把分頁收起來，先不看網址 —— 分頁剛建立時 url 還是 about:blank，
+    # 當場判斷會隨機漏掉附件（實測 AS1569-D 的第二個附件就是這樣掉的）。
+    count = 0
 
-    context.on("page", on_page)
+    def collect(new_page: Any) -> None:
+        opened.append(new_page)
+
+    context.on("page", collect)
     try:
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
@@ -119,24 +117,45 @@ def collect_attachment_urls(page: Any, *, wait_seconds: int = 20) -> list[Attach
         for index in range(count):
             try:
                 links.nth(index).click(timeout=8_000)
-                time.sleep(2.5)
+                time.sleep(3)
             except Exception as exc:
                 log.warning("點附件 %s 失敗：%s", names[index][:40], str(exc)[:80])
     finally:
         try:
-            context.remove_listener("page", on_page)
+            context.remove_listener("page", collect)
         except Exception:
             log.debug("移除分頁監聽失敗", exc_info=True)
 
     seen: set[str] = set()
     result: list[Attachment] = []
-    for url in grabbed:
-        if url in seen:
+    for new_page in opened:
+        url = _settled_url(new_page)
+        try:
+            new_page.close()  # 收完就關，不要把使用者的瀏覽器堆滿 PDF 分頁
+        except Exception:
+            log.debug("關附件分頁失敗", exc_info=True)
+        if not any(marker in url for marker in ATTACHMENT_MARKERS) or url in seen:
             continue
         seen.add(url)
         raw = urllib.parse.unquote(url.rsplit("/", 1)[-1].split("?")[0])
         result.append(Attachment(name=safe_name(raw, 120), url=url))
+    if len(result) < count:
+        log.warning("清單有 %d 個附件，只攔到 %d 個網址", count, len(result))
     return result
+
+
+def _settled_url(new_page: Any, *, wait_seconds: float = 10) -> str:
+    """等分頁的網址從 about:blank 變成真的目標網址。"""
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            url = new_page.url
+        except Exception:
+            return ""
+        if url and not url.startswith("about:"):
+            return url
+        time.sleep(0.3)
+    return ""
 
 
 def download_attachment(attachment: Attachment, folder: Path, *, force: bool = False) -> Path | None:
