@@ -97,8 +97,31 @@ def _run_ffmpeg(command: list[str], *, what: str) -> None:
         raise DownloadError(f"ffmpeg {what}失敗（代碼 {process.returncode}）：\n{tail}")
 
 
+def has_audio(path: Path, *, ffmpeg: str) -> bool:
+    """檔案裡到底有沒有聲音。ffprobe 跟 ffmpeg 放在一起，找不到就當作有。"""
+    probe = Path(ffmpeg).with_name("ffprobe" + Path(ffmpeg).suffix)
+    if not probe.exists():
+        return True
+    try:
+        output = subprocess.run(
+            [str(probe), "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+    except Exception:
+        log.debug("ffprobe 驗音軌失敗", exc_info=True)
+        return True
+    return "audio" in (output.stdout or "")
+
+
 def download_video(
-    variant: hls.Variant, target: Path, *, ffmpeg: str, referer: str = "", force: bool = False
+    variant: hls.Variant,
+    target: Path,
+    *,
+    ffmpeg: str,
+    audio: hls.AudioTrack | None = None,
+    referer: str = "",
+    force: bool = False,
 ) -> Path:
     if target.exists() and target.stat().st_size > 0 and not force:
         log.info("影片已存在，跳過：%s", target.name)
@@ -107,11 +130,23 @@ def download_video(
     command = [ffmpeg, "-hide_banner", "-loglevel", "warning", "-y"]
     if referer:
         command += ["-headers", f"Referer: {referer}\r\n"]
+    command += ["-i", variant.url]
+    if audio is not None:
+        # 畫質那支清單是純影片，聲音要當第二個輸入另外餵進來，再明講怎麼配對。
+        command += ["-i", audio.url, "-map", "0:v:0", "-map", "1:a:0"]
     # -c copy：不重新編碼，拿到的就是平台原本的串流，快而且不掉畫質。
     # 寫到 .part 再改名，所以要明講輸出格式 —— ffmpeg 靠副檔名猜，猜不到 .part。
-    command += ["-i", variant.url, "-c", "copy", "-bsf:a", "aac_adtstoasc",
+    command += ["-c", "copy", "-bsf:a", "aac_adtstoasc",
                 "-f", target.suffix.lstrip(".") or "mp4", str(partial)]
     _run_ffmpeg(command, what=f"下載影片（{variant.label()}）")
+
+    # 沒聲音是這條路最容易犯、又完全不會報錯的失敗，所以改名前先驗一次。
+    if not has_audio(partial, ffmpeg=ffmpeg):
+        partial.unlink(missing_ok=True)
+        raise DownloadError(
+            "抓下來的影片沒有聲音軌，已刪除 —— 這一場的聲音清單可能長得不一樣，"
+            "請回報這個訊息。"
+        )
     partial.replace(target)  # 寫完才改成正式檔名，中斷時不會留下半截的假成品
     log.info("影片已存 %s（%.0f MB）", target.name, target.stat().st_size / 1024 / 1024)
     return target
@@ -158,7 +193,8 @@ def download_session(
     variant = hls.pick_variant(master, settings.height)
     video = download_video(
         variant, folder / f"{stem}.mp4",
-        ffmpeg=ffmpeg, referer=session.url, force=settings.force,
+        ffmpeg=ffmpeg, audio=hls.pick_audio(master, variant),
+        referer=session.url, force=settings.force,
     )
     result["video"] = str(video)
     result["quality"] = variant.label()

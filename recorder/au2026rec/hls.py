@@ -12,7 +12,7 @@ import logging
 import re
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +29,19 @@ class Variant:
     width: int = 0
     height: int = 0
     bandwidth: int = 0
+    # 影片與聲音是分開的兩支播放清單，這裡記的是它要配哪一組聲音。
+    audio_group: str = ""
 
     def label(self) -> str:
         return f"{self.width}x{self.height} {self.bandwidth / 1000:.0f} kbps"
+
+
+@dataclass
+class AudioTrack:
+    url: str
+    group: str = ""
+    language: str = "en"
+    name: str = ""
 
 
 @dataclass
@@ -46,6 +56,7 @@ class Master:
     url: str
     variants: list[Variant]
     subtitles: list[SubtitleTrack]
+    audio: list[AudioTrack] = field(default_factory=list)
 
 
 def _attributes(line: str) -> dict[str, str]:
@@ -80,6 +91,7 @@ def fetch(url: str, *, referer: str = "", timeout: int = 30) -> str:
 def parse_master(text: str, url: str) -> Master:
     variants: list[Variant] = []
     subtitles: list[SubtitleTrack] = []
+    audio: list[AudioTrack] = []
     lines = [line.strip() for line in text.splitlines()]
 
     for index, line in enumerate(lines):
@@ -97,20 +109,29 @@ def parse_master(text: str, url: str) -> Master:
                 width=width,
                 height=height,
                 bandwidth=int(attrs.get("BANDWIDTH") or 0),
+                audio_group=attrs.get("AUDIO", ""),
             ))
         elif line.startswith("#EXT-X-MEDIA:"):
             attrs = _attributes(line)
-            if attrs.get("TYPE") != "SUBTITLES" or not attrs.get("URI"):
+            if not attrs.get("URI"):
                 continue
-            subtitles.append(SubtitleTrack(
-                url=_absolute(url, attrs["URI"]),
-                language=attrs.get("LANGUAGE") or "en",
-                name=attrs.get("NAME") or "",
-            ))
+            if attrs.get("TYPE") == "SUBTITLES":
+                subtitles.append(SubtitleTrack(
+                    url=_absolute(url, attrs["URI"]),
+                    language=attrs.get("LANGUAGE") or "en",
+                    name=attrs.get("NAME") or "",
+                ))
+            elif attrs.get("TYPE") == "AUDIO":
+                audio.append(AudioTrack(
+                    url=_absolute(url, attrs["URI"]),
+                    group=attrs.get("GROUP-ID", ""),
+                    language=attrs.get("LANGUAGE") or "en",
+                    name=attrs.get("NAME") or "",
+                ))
 
     if not variants:
         raise HlsError("播放清單裡沒有任何畫質 —— 可能抓到的不是 master.m3u8")
-    return Master(url=url, variants=variants, subtitles=subtitles)
+    return Master(url=url, variants=variants, subtitles=subtitles, audio=audio)
 
 
 def pick_variant(master: Master, height: int) -> Variant:
@@ -131,3 +152,17 @@ def pick_subtitle(master: Master, language: str = "en") -> SubtitleTrack | None:
         return None
     exact = [t for t in master.subtitles if t.language.lower().startswith(language.lower())]
     return (exact or master.subtitles)[0]
+
+
+def pick_audio(master: Master, variant: Variant) -> AudioTrack | None:
+    """找這個畫質要配的聲音軌。
+
+    AU 的 master 把影片與聲音拆成兩支清單，畫質那一支是**純影片**。只餵畫質
+    網址給 ffmpeg 會抓到一個沒有聲音的檔，而且不會有任何錯誤訊息。
+    """
+    if not master.audio:
+        return None  # 音訊混在影片裡（有些來源是這樣），不用另外配
+    same = [a for a in master.audio if a.group and a.group == variant.audio_group]
+    chosen = (same or master.audio)[0]
+    log.info("聲音：另外配 %s（%s）", chosen.name or chosen.language, chosen.group or "無群組")
+    return chosen
