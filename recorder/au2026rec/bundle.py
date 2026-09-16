@@ -48,10 +48,18 @@ def safe_name(text: str, max_length: int = 80) -> str:
 
 
 def session_folder(root: Path, code: str, title: str) -> Path:
-    """課程資料夾：<root>/<代碼> <標題>/"""
-    # 標題先各自清一遍，收藏標記才不會卡在代碼後面躲過開頭比對。
-    name = safe_name(f"{safe_name(code, 30)} {safe_name(title)}".strip() if code else title)
-    folder = root / name
+    """課程資料夾：`<root>/<代碼>␣␣<標題>/`
+
+    代碼與標題之間是**兩個空格**，標題盡量不截斷 —— 這是既有手動整理的慣例，
+    對不上的話同一堂課會開出第二個資料夾。長度留在 110 以內，加上錄影檔名
+    還在 Windows 的 260 字元路徑限制內。
+    """
+    # 兩段各自清乾淨後才接起來 —— 整串再跑一次 safe_name 會把中間的兩個空格
+    # 併成一個（它會壓縮連續空白），就對不上既有資料夾了。
+    code_part = safe_name(code, 30) if code else ""
+    title_part = safe_name(title, 110)
+    name = f"{code_part}  {title_part}" if code_part else title_part
+    folder = root / name[:110].rstrip(". ")
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 

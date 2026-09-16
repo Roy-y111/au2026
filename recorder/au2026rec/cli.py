@@ -964,7 +964,7 @@ def _run(cfg: Config, items: Sequence[PlanItem], args: argparse.Namespace) -> in
         local_tz=get_zone(str(cfg.get("schedule", "local_timezone"))),
         report_file=cfg.resolve("paths", "report_file"),
         skip_past=not args.include_past,
-        library_root=cfg.resolve("library", "root") if cfg.get("library", "enabled") else None,
+        library_root=cfg.library_root() if cfg.get("library", "enabled") else None,
         fetch_attachments=bool(cfg.get("library", "attachments")),
     )
     runner = Runner(navigator, obs, options)
@@ -1078,7 +1078,7 @@ def cmd_download(args: argparse.Namespace) -> int:
         return 1
 
     settings = download.DownloadSettings(
-        root=cfg.resolve("library", "root"),
+        root=cfg.library_root(),
         height=args.height or int(cfg.get("library", "download_height")),
         ffmpeg=str(cfg.get("library", "ffmpeg")),
         subtitles=bool(cfg.get("library", "subtitles")) and not args.no_subtitles,

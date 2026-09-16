@@ -64,7 +64,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "close_page_after": True,
     },
     "library": {
-        "root": "AU2026",
+        # 留空 = 放在使用者的「影片」資料夾底下（AU2026）。課程影片動輒幾十 GB，
+        # 不該躺在程式資料夾裡跟著一起被搬、被打包、被刪。
+        "root": "",
         "enabled": True,
         "attachments": True,
         "subtitles": True,
@@ -82,7 +84,6 @@ _PATH_KEYS = {
     ("schedule", "file"),
     ("schedule", "catalog"),
     ("browser", "attach_profile_dir"),
-    ("library", "root"),
     ("paths", "log_file"),
     ("paths", "report_file"),
 }
@@ -110,6 +111,13 @@ class Config:
     def resolve(self, section: str, key: str) -> Path:
         return (self.root / str(self.get(section, key))).resolve()
 
+    def library_root(self) -> Path:
+        """課程資料夾要放哪。留空就放使用者的「影片」資料夾底下。"""
+        configured = str(self.get("library", "root")).strip()
+        if configured:
+            return (self.root / configured).resolve()
+        return videos_dir() / "AU2026"
+
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}
@@ -119,6 +127,25 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def videos_dir() -> Path:
+    """使用者的「影片」資料夾。
+
+    Windows 上這個位置可以被搬到別的碟，所以先問登錄檔，不要寫死 ~/Videos。
+    """
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+                value = winreg.QueryValueEx(handle, "My Video")[0]
+            if value and Path(value).is_dir():
+                return Path(value)
+        except Exception:
+            pass  # 讀不到就用家目錄底下的慣例位置
+    return Path.home() / "Videos"
 
 
 def app_dir() -> Path:

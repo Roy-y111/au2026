@@ -116,8 +116,12 @@ report_file = "logs/sessions.csv"
 # 每堂課一個資料夾，裡面放影片(或錄影) + 字幕 + 附件 + session.json。
 # 直播錄完的檔案會搬進來，On-demand 下載的影片也放這裡。
 enabled = true
-# 課程資料夾放在哪（相對路徑以設定檔所在目錄為基準）
-root = "AU2026"
+# 課程資料夾放在哪。
+# 留空 = 你的「影片」資料夾底下的 AU2026（例如 C:\Users\你\Videos\AU2026）——
+# 幾十 GB 的課程影片不該躺在程式資料夾裡。要指定就填完整路徑，例如
+#   root = 'D:\AU2026'
+# （用單引號，Windows 路徑的反斜線才不會被當成跳脫字元）
+root = ""
 # 要不要順便抓課程附件（講義、簡報 PDF）
 attachments = true
 # 要不要抓官方字幕（只有 download 模式拿得到；直播沒有）
