@@ -129,7 +129,30 @@ def _load_sessions(cfg: Config) -> tuple[list[Any], list[str]]:
             "找不到 catalog.json，課程網址只能靠課表自帶的 URL 欄。"
             "建議先執行 au2026rec catalog。",
         )
+    stale = _schedule_age_warning(cfg.resolve("schedule", "file"))
+    if stale:
+        warnings.insert(0, stale)
     return sessions, warnings
+
+
+def _schedule_age_warning(path: Path, *, stale_days: int = 1) -> str:
+    """課表放久了就該重抓。
+
+    官方在活動期間會臨時撤場（實例：9/15 匯出的課表有 48 場，9/16 再匯出只剩
+    43 場，被撤掉的 5 場網址全部變成空頁面）。課表是使用者自己匯出的檔案，
+    程式沒辦法幫他更新，只能在它舊了的時候提醒。
+    """
+    try:
+        age_days = (time.time() - path.stat().st_mtime) / 86_400
+    except OSError:
+        return ""
+    if age_days < stale_days:
+        return ""
+    return (
+        f"這份課表是 {age_days:.0f} 天前匯出的。"
+        "官方會臨時撤場，撤掉的課網址會變成空頁面 —— "
+        "建議重新到 AU 網站的 My Schedule 匯出一份覆蓋掉，順便跑 au2026rec catalog。"
+    )
 
 
 def _filter_sessions(
@@ -1139,9 +1162,10 @@ def cmd_download(args: argparse.Namespace) -> int:
     print(f"\n{len(failed)} 場沒抓到：")
     if stale:
         print(f"\n  ● 網址已失效（該場被撤下或換了網址）：{'、'.join(s.code for s in stale)}")
-        print("    這是對照表過期，不是程式問題。先更新整份：")
+        print("    這是課表過期，不是程式問題。官方會臨時撤場，你的課表不會自己更新。")
+        print("    到 AU 網站的 My Schedule 重新匯出一份覆蓋掉舊的，然後：")
         print("      au2026rec catalog")
-        print("    還是不行就到 AU 網站複製新網址，單場補上：")
+        print("    如果那幾場其實還在、只是換了網址，就單場補上：")
         print(f"      au2026rec url {stale[0].code} <新網址>")
         print("    補完重跑 download 就會接著抓（已抓好的會自動跳過）。")
     for session, reason in others:

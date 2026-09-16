@@ -439,9 +439,9 @@ class AttachNavigator(Navigator):
             result["missing"] = True
             result["note"] = "課程頁顯示 No session to display（網址失效或該場已撤下）"
             log.error(
-                "這個網址打開是空的（No session to display）—— 該場可能被撤下或換了網址。"
-                "請到 AU 網站複製新網址，用 au2026rec url <課程代碼> <網址> 補上；"
-                "也可以重跑 au2026rec catalog 更新整份對照表。"
+                "這個網址打開是空的（No session to display）—— 該場很可能已經被官方撤下。"
+                "到 AU 網站的 My Schedule 重新匯出課表覆蓋掉舊的，再跑 au2026rec catalog；"
+                "單場要補的話用 au2026rec url <課程代碼> <網址>。"
             )
             return result
 
