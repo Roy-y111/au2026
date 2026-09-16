@@ -26,6 +26,9 @@ from typing import Any, Sequence
 
 log = logging.getLogger(__name__)
 
+# 「查無此課」的頁面長這樣：HTTP 200、版面正常，只有內容區寫這一句。
+_MISSING_SESSION = "text=No session to display"
+
 MODE_ATTACH = "attach"
 MODE_OPEN = "open"
 MODES = (MODE_ATTACH, MODE_OPEN)
@@ -382,6 +385,18 @@ class AttachNavigator(Navigator):
             except Exception:
                 continue
 
+    def session_is_missing(self) -> bool:
+        """這一頁是不是「查無此課」。
+
+        撤掉或改過 id 的場次**不會回 404** —— 伺服器照樣回 200，版面照樣長出來，
+        只是內容區塊寫著 No session to display。所以只能看內文判斷。
+        """
+        try:
+            return bool(self.page.locator(_MISSING_SESSION).count())
+        except Exception:
+            log.debug("檢查課程頁是否存在時出錯", exc_info=True)
+            return False
+
     def open_session(self, url: str) -> dict[str, Any]:
         result: dict[str, Any] = {"url": url, "played": False, "navigator": self.label}
         self.goto(url)
@@ -389,6 +404,16 @@ class AttachNavigator(Navigator):
         if self.settings.settle_seconds:
             time.sleep(self.settings.settle_seconds)
         self.dismiss_popups()
+
+        if self.session_is_missing():
+            result["missing"] = True
+            result["note"] = "課程頁顯示 No session to display（網址失效或該場已撤下）"
+            log.error(
+                "這個網址打開是空的（No session to display）—— 該場可能被撤下或換了網址。"
+                "請到 AU 網站複製新網址，用 au2026rec url <課程代碼> <網址> 補上；"
+                "也可以重跑 au2026rec catalog 更新整份對照表。"
+            )
+            return result
 
         # 直播通常進頁面就自動播。這時候絕對不能去點播放器 ——
         # video.js 點畫面會 toggle 暫停，等於把正在播的直播按停。

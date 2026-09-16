@@ -1127,10 +1127,24 @@ def cmd_download(args: argparse.Namespace) -> int:
     finally:
         navigator.close()
 
-    print()
-    for session, reason in failed:
-        print(f"  ✗ {session.code}：{reason[:120]}")
-    return 1 if failed else 0
+    if not failed:
+        print(f"\n✓ 全部完成，收在 {settings.root}")
+        return 0
+
+    # 網址失效要另外列：那不是程式壞了，是課表對照表過期，而且使用者補得回來。
+    stale = [s for s, reason in failed if "No session to display" in reason]
+    others = [(s, r) for s, r in failed if "No session to display" not in r]
+    print(f"\n{len(failed)} 場沒抓到：")
+    if stale:
+        print(f"\n  ● 網址已失效（該場被撤下或換了網址）：{'、'.join(s.code for s in stale)}")
+        print("    這是對照表過期，不是程式問題。先更新整份：")
+        print("      au2026rec catalog")
+        print("    還是不行就到 AU 網站複製新網址，單場補上：")
+        print(f"      au2026rec url {stale[0].code} <新網址>")
+        print("    補完重跑 download 就會接著抓（已抓好的會自動跳過）。")
+    for session, reason in others:
+        print(f"\n  ✗ {session.code}：{reason[:160]}")
+    return 1
 
 
 # ── 參數 ────────────────────────────────────────────────────────────────
@@ -1309,9 +1323,12 @@ def interactive_menu() -> int:
     parser = build_parser()
     print(f"\nau2026rec {__version__} — AU2026 自動開課 + OBS 錄影")
     print(f"⚠ {DISCLAIMER}\n")
-    print("※ 真實課程頁還沒有人驗證過（網址與播放鍵都是事前推測的）。")
-    print("  但 OBS 錄的是整個螢幕，所以就算導頁或播放出錯，畫面照樣照時間錄。")
+    print("※ 直播與隨選都已在 2026-09-16 的真實課程頁跑通（自動導頁、自動播放、")
+    print("  解除靜音、下載影片與附件）。剩下會出狀況的多半是課表與網址本身。")
+    print("  OBS 錄的是整個螢幕，所以就算導頁或播放出錯，畫面照樣照時間錄。")
     print("  出狀況時你可以自己改：")
+    print("    · 開到空頁面（No session to display）→ 該場被撤下或換了網址，")
+    print("      選 c 更新對照表，或選 u 單場補網址")
     print("    · 網址錯或查不到 → 選 u（或 au2026rec url 課程代碼 網址）")
     print("    · 影片沒自動播   → 選 p 找選擇器，貼進 config.toml 的 play_selectors")
     print("    · 完全沒切頁     → 自己把那頁開起來就好，錄影已經在跑")

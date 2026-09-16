@@ -66,7 +66,14 @@ def capture_master_url(navigator: Any, url: str, *, wait_seconds: int = 45) -> s
 
     page.on("request", on_request)
     try:
-        navigator.open_session(url)
+        opened = navigator.open_session(url)
+        if opened.get("missing"):
+            # 空頁面等 45 秒也不會冒出串流，直接認賠下一場。
+            raise DownloadError(
+                "課程頁是空的（No session to display）—— 這個網址已失效或該場被撤下。"
+                "到 AU 網站複製新網址後用 au2026rec url <課程代碼> <網址> 補上，"
+                "或重跑 au2026rec catalog 更新對照表。"
+            )
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline and not found:
             time.sleep(1)
